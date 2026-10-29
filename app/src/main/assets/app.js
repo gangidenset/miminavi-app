@@ -53,10 +53,30 @@ function inPoly(p, poly) {
   return inside;
 }
 const roomName = n => n.replace(/[（(][^）)]*[)）]$/, '');
+// 部屋：重なっている場合はいちばん小さい部屋を採用
+const polyArea = pts => Math.abs(pts.reduce((a, p, i) => { const q = pts[(i + 1) % pts.length]; return a + p[0] * q[1] - q[0] * p[1]; }, 0)) / 2;
+const ROOMS = MAP.rooms.map(r => ({ ...r, area: polyArea(r.poly) }));
+function roomAt(p) {
+  let best = null;
+  ROOMS.forEach(r => { if (inPoly(p, r.poly) && (!best || r.area < best.area)) best = r; });
+  return best;
+}
+const roomCellCache = new Map();
+function nearestCellInRoom(room, p) {
+  let cells = roomCellCache.get(room.name);
+  if (!cells) {
+    cells = [];
+    for (let y = 0; y < GH; y++) for (let x = 0; x < GW; x++) if (walkable(x, y) && roomAt(cellCenter([x, y])) === room) cells.push([x, y]);
+    roomCellCache.set(room.name, cells);
+  }
+  let best = null, bd = 1e9;
+  cells.forEach(c => { const d = dist(cellCenter(c), p); if (d < bd) { bd = d; best = c; } });
+  return best;
+}
 function placeName(p) {
   const d = DESTS.find(d => dist(d.at, p) < 1.2);
   if (d) return d.name;
-  const r = MAP.rooms.find(r => inPoly(p, r.poly));
+  const r = roomAt(p);
   return r ? roomName(r.name) : '通路';
 }
 const spoken = name => name.replace(/[（(]\s*([^）)]*?)\s*[)）]/g, '$1');
@@ -65,7 +85,7 @@ const spoken = name => name.replace(/[（(]\s*([^）)]*?)\s*[)）]/g, '$1');
 const st = {
   view: 'home', tab: 'guide', sound: true,
   status: null, beacons: [], others: 0, scanning: false,
-  heading: null, pos: null, nav: null,
+  heading: null, pos: null, nav: null, room: null, roomCand: null, roomCandN: 0,
   data: { n: 2.0, tx: {}, northOffset: null, assign: {} },
   placing: null,
 };
@@ -190,18 +210,61 @@ function seenByLabel() {
   });
   return m;
 }
+// 1m地点の強さで補正した電波の強さ（大きいほど近い）
+const strength = u => u.b.rssi - (typeof st.data.tx[u.mb.label] === 'number' ? st.data.tx[u.mb.label] : u.b.tx);
+const ROOM_SWITCH_DB = 3;     // 別の部屋に切り替える差（dB）
+const ROOM_SWITCH_COUNT = 2;  // 何回続いたら切り替えるか（0.5秒ごと）
+function decideRoom(all) {
+  // 部屋ごとに、その部屋にあるビーコンのいちばん強い値
+  const score = new Map();
+  all.forEach(u => {
+    const r = roomAt(u.mb.at); if (!r) return;
+    const v = strength(u);
+    if (!score.has(r.name) || v > score.get(r.name).v) score.set(r.name, { r, v });
+  });
+  const top = [...score.values()].sort((a, b) => b.v - a.v)[0];
+  if (!top) return;
+  const cur = st.room && score.get(st.room.name);
+  if (!st.room || !cur) { st.room = top.r; st.roomCand = null; return; }
+  if (top.r.name !== st.room.name && top.v - cur.v >= ROOM_SWITCH_DB) {
+    if (st.roomCand === top.r.name) { if (++st.roomCandN >= ROOM_SWITCH_COUNT) { st.room = top.r; st.roomCand = null; } }
+    else { st.roomCand = top.r.name; st.roomCandN = 1; }
+  } else st.roomCand = null;
+}
 function estimate() {
-  const used = [...seenByLabel().values()].sort((a, c) => a.d - c.d).slice(0, 4);
-  if (!used.length) { st.pos = null; return; }
+  const all = [...seenByLabel().values()].sort((a, c) => a.d - c.d);
+  const used = all.slice(0, 4);
+  if (!used.length) { st.pos = null; st.room = null; return; }
+  const prevRoom = st.room;
+  decideRoom(all);
   let sx = 0, sy = 0, sw = 0;
   used.forEach(u => {
     const w = 1 / Math.pow(Math.max(u.d, 0.3), 2);
     sx += w * u.mb.at[0]; sy += w * u.mb.at[1]; sw += w;
   });
   let x = sx / sw, y = sy / sw;
-  if (st.pos) { x = st.pos.x + 0.4 * (x - st.pos.x); y = st.pos.y + 0.4 * (y - st.pos.y); }
+  // 今いる部屋の外に出たら、部屋の中のいちばん近い場所に寄せる（壁の向こうに推定しない）
+  if (st.room && !inPoly([x, y], st.room.poly)) {
+    const c = nearestCellInRoom(st.room, [x, y]);
+    if (c) [x, y] = cellCenter(c);
+  }
+  // 前回となめらかにつなぐ（部屋が変わったときはそのまま移る）
+  if (st.pos && prevRoom === st.room) { x = st.pos.x + 0.4 * (x - st.pos.x); y = st.pos.y + 0.4 * (y - st.pos.y); }
   const cell = nearestFree([x, y]);
-  st.pos = { x, y, acc: used[0].d, used, cell };
+  st.pos = { x, y, acc: used[0].d, used, all, cell, room: st.room };
+}
+// 目的地に着いたか：同じ部屋にいて、目的地に近い（または目的地そばのビーコンがいちばん強い）
+function atDest(dest) {
+  if (!st.pos) return false;
+  const destRoom = roomAt(dest.at);
+  const roomHasBeacon = destRoom && mapBeacons().some(b => roomAt(b.at) === destRoom);
+  if (roomHasBeacon && st.room !== destRoom) return false;
+  if (dist([st.pos.x, st.pos.y], dest.at) <= 1.2) return true;
+  const top = st.pos.all[0];
+  if (!top || top.b.samples < 2) return false;
+  const nearDest = dist(top.mb.at, dest.at) < 2.5 && (!destRoom || roomAt(top.mb.at) === destRoom);
+  const lead = st.pos.all[1] ? strength(top) - strength(st.pos.all[1]) : 99;
+  return nearDest && top.d < 1.2 && lead >= 2;
 }
 
 // ------------------------------------------------------------ 図面の描画
@@ -301,7 +364,7 @@ function renderHomeKpi() {
   $('kPlaced').textContent = mapBeacons().length;
   $('kSeen').textContent = seenByLabel().size;
   $('kPos').textContent = st.pos
-    ? `現在地：${placeName([st.pos.x, st.pos.y])} 付近（誤差 約${st.pos.acc.toFixed(1)}m）`
+    ? `現在地：${placeName([st.pos.x, st.pos.y])} 付近（誤差 約${st.pos.acc.toFixed(1)}m）${st.room ? `／いる部屋：${roomName(st.room.name)}` : ''}`
     : '現在地：図面のビーコンを受信していません（iPhone の Minor を B-xx の番号に合わせてください）';
 }
 function renderStatus() {
@@ -623,11 +686,9 @@ function navRealUpdate() {
   if (!st.pos) return;
   const pos = [st.pos.x, st.pos.y];
   placeMeAt(pos, nav.segs[segIndexAt(Math.max(1, nav.idx))].d);
-  // 到着：目的地から約1.2m以内、または目的地そばのビーコンに約1m以内
-  const near = mapBeacons().filter(b => dist(b.at, nav.dest.at) < 2.5).map(b => b.label);
-  const seen = seenByLabel();
-  const closeBeacon = near.some(l => { const h = seen.get(l); return h && h.b.samples >= 2 && h.d < 1.0; });
-  if (dist(pos, nav.dest.at) <= 1.2 || closeBeacon) { advance(nav.path.length - 1); return; }
+  // 到着：条件を満たす状態が約1.5秒（3回）続いたら
+  nav.arriveN = atDest(nav.dest) ? (nav.arriveN || 0) + 1 : 0;
+  if (nav.arriveN >= 3) { advance(nav.path.length - 1); return; }
   // ルート上のいちばん近い地点（少しの後戻りは許容、先は 8m まで）
   let bj = nav.idx, bd = 1e9;
   const hi = Math.min(nav.path.length - 1, nav.idx + 40);
@@ -686,7 +747,7 @@ function renderPlan(full) {
   else updateDyn(el);
   $('planSize').textContent = `${(BX1 - BX0 - 0.8).toFixed(1)}m × ${(BY1 - BY0 - 0.8).toFixed(1)}m`;
   $('planPos').textContent = st.pos
-    ? `x ${st.pos.x.toFixed(1)}m, y ${st.pos.y.toFixed(1)}m（${placeName([st.pos.x, st.pos.y])}付近・誤差 約${st.pos.acc.toFixed(1)}m）`
+    ? `x ${st.pos.x.toFixed(1)}m, y ${st.pos.y.toFixed(1)}m（${placeName([st.pos.x, st.pos.y])}付近・誤差 約${st.pos.acc.toFixed(1)}m）${st.room ? `／部屋：${roomName(st.room.name)}` : ''}`
     : '—（図面のビーコンを受信していません）';
   $('planUsed').textContent = st.pos ? st.pos.used.map(u => `${u.mb.label} ${u.d.toFixed(1)}m`).join(' / ') : '—';
   const seen = seenByLabel();
@@ -853,5 +914,5 @@ if (N) {
   startMock();
 }
 // テスト用
-window.__mimi = { route, segments, matchDest, DESTS, ENTRY, st, startNav, doorsOnPath };
+window.__mimi = { route, segments, matchDest, DESTS, ENTRY, st, startNav, doorsOnPath, atDest, roomAt, estimate };
 })();

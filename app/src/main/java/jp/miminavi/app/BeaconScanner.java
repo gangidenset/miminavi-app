@@ -38,7 +38,7 @@ public class BeaconScanner {
     private static final long PUBLISH_MS = 500;
     private static final long SAMPLE_WINDOW_MS = 4000;   // 平均に使う期間
     private static final long FORGET_MS = 8000;          // これ以上受信がなければ一覧から外す
-    private static final int MAX_SAMPLES = 12;
+    private static final int MAX_SAMPLES = 20;
 
     private static final class Sample {
         final long t; final int rssi;
@@ -183,8 +183,12 @@ public class BeaconScanner {
                 List<Integer> recent = new ArrayList<>();
                 for (Sample s : t.samples) if (now - s.t <= SAMPLE_WINDOW_MS) recent.add(s.rssi);
                 if (recent.isEmpty()) recent.add(t.samples.peekLast().rssi);
+                // 飛び抜けた値に引っぱられないよう、上下 20% を捨ててから平均（トリム平均）
+                java.util.Collections.sort(recent);
+                int cut = recent.size() >= 5 ? recent.size() / 5 : 0;
                 double sum = 0;
-                for (int v : recent) sum += v;
+                int cnt = 0;
+                for (int i = cut; i < recent.size() - cut; i++) { sum += recent.get(i); cnt++; }
                 try {
                     JSONObject o = new JSONObject();
                     o.put("key", e.getKey());
@@ -194,7 +198,7 @@ public class BeaconScanner {
                     o.put("minor", t.beacon.minor);
                     if (t.beacon.instance != null) o.put("instance", t.beacon.instance);
                     o.put("tx", t.beacon.txPower);
-                    o.put("rssi", Math.round(sum / recent.size() * 10) / 10.0);
+                    o.put("rssi", Math.round(sum / cnt * 10) / 10.0);
                     o.put("rssiLast", t.samples.peekLast().rssi);
                     o.put("samples", recent.size());
                     o.put("ageMs", now - t.lastSeen);
