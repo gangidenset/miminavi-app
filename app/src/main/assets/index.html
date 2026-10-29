@@ -110,6 +110,10 @@
   <!-- ================= PLAN（図面） ================= -->
   <section class="view" id="v-plan" hidden>
     <div class="appbar"><div class="logo sm">事業所の図面</div><span class="chip" id="planSize"></span></div>
+    <div class="placing" id="placingBar" hidden>
+      <div><b id="placingName"></b><span>を置いた場所を図面上でタップ</span></div>
+      <button class="iconbtn" id="placingCancel">やめる</button>
+    </div>
     <div class="map plan" id="planMap"></div>
     <dl class="kv"><dt>推定位置</dt><dd id="planPos">—</dd><dt>使用ビーコン</dt><dd id="planUsed">—</dd></dl>
     <div class="legend">
@@ -119,7 +123,7 @@
       <span><i class="lg coral"></i>現在地</span>
     </div>
     <div class="card">
-      <h3>図面のビーコン（B-xx）<span class="sub">Minor 番号で自動対応</span></h3>
+      <h3>図面のビーコン<span class="sub">Minor 番号で自動／ビーコンタブで手動</span></h3>
       <div id="placedList" class="plist"></div>
     </div>
   </section>
@@ -138,7 +142,7 @@
     </div>
     <div class="card">
       <h3>iPhone（Beacon Simulator）の設定</h3>
-      <p class="sub">形式は iBeacon、全台で同じ UUID・Major にして、<b>Minor を図面の番号に合わせます</b>（B-01 の場所に置く iPhone は Minor 1、B-13 は Minor 13）。受信すると自動で図面の位置に対応します。iPhone は画面をつけたまま、アプリを前面に表示しておいてください（画面を消すと送信が止まります）。</p>
+      <p class="sub">形式は iBeacon、全台で同じ UUID・Major にして、<b>Minor を図面の番号に合わせます</b>（B-01 の場所に置く iPhone は Minor 1、B-13 は Minor 13）。受信すると自動で図面の位置に対応します。番号が合わないときは、各ビーコンの「図面の位置」で B-xx を選ぶか、図面をタップして置くこともできます。iPhone は画面をつけたまま、アプリを前面に表示しておいてください（画面を消すと送信が止まります）。</p>
     </div>
   </section>
 

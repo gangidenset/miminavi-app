@@ -66,7 +66,8 @@ const st = {
   view: 'home', tab: 'guide', sound: true,
   status: null, beacons: [], others: 0, scanning: false,
   heading: null, pos: null, nav: null,
-  data: { n: 2.0, tx: {}, northOffset: null },
+  data: { n: 2.0, tx: {}, northOffset: null, assign: {} },
+  placing: null,
 };
 function load() {
   try {
@@ -76,6 +77,7 @@ function load() {
       if (typeof d.n === 'number') st.data.n = d.n;
       if (d.tx && typeof d.tx === 'object') st.data.tx = d.tx;
       if (typeof d.northOffset === 'number') st.data.northOffset = d.northOffset;
+      if (d.assign && typeof d.assign === 'object') st.data.assign = d.assign;
     }
   } catch (e) { /* 初回など */ }
 }
@@ -123,6 +125,7 @@ $('tabbar').addEventListener('click', e => {
 });
 window.__back = () => {
   if (!$('dark').hidden) { $('dark').hidden = true; return true; }
+  if (st.placing) { st.placing = null; renderPlan(true); return true; }
   if (st.tab !== 'guide') { show(guideView); return true; }
   if (st.view !== 'home') { stopNav(); show('home'); return true; }
   return false;
@@ -148,7 +151,30 @@ function onBeacons(d) {
 }
 
 // ------------------------------------------------------------ ビーコン → 図面の B-xx（Minor 番号で対応）
-const beaconOf = b => (b.type === 'Eddystone' ? null : BEACONS.find(x => x.minor === b.minor)) || null;
+// 手動の割り当て（st.data.assign[キー] = {label} または {label, at}）を優先し、なければ Minor 番号で自動対応
+function beaconOf(b) {
+  const a = st.data.assign[b.key];
+  if (a) {
+    if (a.at) return { label: a.label, at: a.at, custom: true, manual: true };
+    const mb = BEACONS.find(x => x.label === a.label);
+    if (mb) return { ...mb, manual: true };
+  }
+  if (b.type === 'Eddystone') return null;
+  const mb = BEACONS.find(x => x.minor === b.minor);
+  if (!mb) return null;
+  // 同じ B-xx を別のビーコンに手動で割り当て済みなら自動対応しない
+  if (Object.entries(st.data.assign).some(([k, v]) => k !== b.key && v.label === mb.label)) return null;
+  return mb;
+}
+// 図面上のビーコン一覧（B-xx ＋ 自分で置いたもの）
+function mapBeacons() {
+  const custom = Object.values(st.data.assign).filter(a => a.at).map(a => ({ label: a.label, at: a.at, minor: null, custom: true }));
+  return BEACONS.concat(custom);
+}
+function nextCustomLabel() {
+  const used = new Set(Object.values(st.data.assign).map(a => a.label));
+  for (let i = 1; ; i++) { const l = 'P-' + String(i).padStart(2, '0'); if (!used.has(l)) return l; }
+}
 function distanceOf(b, label) {
   const tx = typeof st.data.tx[label] === 'number' ? st.data.tx[label] : b.tx;
   return Math.min(30, Math.max(0.1, Math.pow(10, (tx - b.rssi) / (10 * st.data.n))));
@@ -245,7 +271,7 @@ function updateDyn(el) {
   const seen = seenByLabel();
   const usedSet = new Set(st.pos ? st.pos.used.map(u => u.mb.label) : []);
   let s = '';
-  BEACONS.forEach(mb => {
+  mapBeacons().forEach(mb => {
     const hit = seen.get(mb.label);
     const [x, y] = mb.at;
     if (hit && usedSet.has(mb.label)) s += `<circle cx="${x * U}" cy="${y * U}" r="${Math.min(hit.d, 12) * U}" fill="none" stroke="var(--teal)" stroke-width="3" opacity=".35"/>`;
@@ -256,6 +282,10 @@ function updateDyn(el) {
     const px = st.pos.x * U, py = st.pos.y * U;
     s += `<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="${(Math.max(0.3, Math.min(st.pos.acc, 4)) * U).toFixed(1)}" fill="var(--coral)" opacity=".15"/>`;
     s += `<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="${7 * K}" fill="var(--coral)" stroke="#fff" stroke-width="${2 * K}"/>`;
+  }
+  if (st.placing && el.id === 'planMap') {
+    const svg = el.querySelector('svg'), vb = svg ? svg.viewBox.baseVal : null;
+    if (vb) s += `<rect x="${vb.x + 8}" y="${vb.y + 8}" width="${vb.width - 16}" height="${vb.height - 16}" fill="none" stroke="var(--coral)" stroke-width="10" stroke-dasharray="30 18" rx="12"/>`;
   }
   g.innerHTML = s;
 }
@@ -268,7 +298,7 @@ function renderHome() {
   renderStatus(); renderHomeKpi();
 }
 function renderHomeKpi() {
-  $('kPlaced').textContent = BEACONS.length;
+  $('kPlaced').textContent = mapBeacons().length;
   $('kSeen').textContent = seenByLabel().size;
   $('kPos').textContent = st.pos
     ? `現在地：${placeName([st.pos.x, st.pos.y])} 付近（誤差 約${st.pos.acc.toFixed(1)}m）`
@@ -594,7 +624,7 @@ function navRealUpdate() {
   const pos = [st.pos.x, st.pos.y];
   placeMeAt(pos, nav.segs[segIndexAt(Math.max(1, nav.idx))].d);
   // 到着：目的地から約1.2m以内、または目的地そばのビーコンに約1m以内
-  const near = BEACONS.filter(b => dist(b.at, nav.dest.at) < 2.5).map(b => b.label);
+  const near = mapBeacons().filter(b => dist(b.at, nav.dest.at) < 2.5).map(b => b.label);
   const seen = seenByLabel();
   const closeBeacon = near.some(l => { const h = seen.get(l); return h && h.b.samples >= 2 && h.d < 1.0; });
   if (dist(pos, nav.dest.at) <= 1.2 || closeBeacon) { advance(nav.path.length - 1); return; }
@@ -660,14 +690,40 @@ function renderPlan(full) {
     : '—（図面のビーコンを受信していません）';
   $('planUsed').textContent = st.pos ? st.pos.used.map(u => `${u.mb.label} ${u.d.toFixed(1)}m`).join(' / ') : '—';
   const seen = seenByLabel();
-  const sig = BEACONS.map(b => { const h = seen.get(b.label); return b.label + (h ? Math.round(h.b.rssi) : 'x'); }).join('|');
+  $('placingBar').hidden = !st.placing;
+  if (st.placing) $('placingName').textContent = st.placing.label;
+  const all = mapBeacons();
+  const sig = all.map(b => { const h = seen.get(b.label); return b.label + (h ? Math.round(h.b.rssi) + h.b.key : 'x'); }).join('|');
   if (!full && sig === listSig) return;
   listSig = sig;
-  $('placedList').innerHTML = BEACONS.map(b => {
+  $('placedList').innerHTML = all.map(b => {
     const h = seen.get(b.label);
-    return `<div class="prow"><i class="lg ${h ? 'teal' : 'gray'}"></i><b class="${h ? '' : 'off'}">${esc(b.label)}</b><span class="grow">${esc(placeName(b.at))}・Minor ${b.minor ?? '?'}</span><span class="rem">${h ? `${Math.round(h.b.rssi)}dBm 約${h.d.toFixed(1)}m` : '未受信'}</span></div>`;
+    const how = b.custom ? '自分で配置' : h && h.mb.manual ? '手動で割り当て' : `Minor ${b.minor ?? '?'}`;
+    const del = b.custom ? `<button class="iconbtn" data-del="${esc(b.label)}">外す</button>` : '';
+    return `<div class="prow"><i class="lg ${h ? 'teal' : 'gray'}"></i><b class="${h ? '' : 'off'}">${esc(b.label)}</b><span class="grow">${esc(placeName(b.at))}・${how}</span><span class="rem">${h ? `${Math.round(h.b.rssi)}dBm 約${h.d.toFixed(1)}m` : '未受信'}</span>${del}</div>`;
   }).join('');
 }
+
+$('placedList').addEventListener('click', e => {
+  const b = e.target.closest('[data-del]'); if (!b) return;
+  Object.keys(st.data.assign).forEach(k => { if (st.data.assign[k].label === b.dataset.del) delete st.data.assign[k]; });
+  save(); estimate(); renderPlan(true);
+});
+$('planMap').addEventListener('click', e => {
+  if (!st.placing) return;
+  const svg = $('planMap').querySelector('svg'); if (!svg) return;
+  const pt = svg.createSVGPoint(); pt.x = e.clientX; pt.y = e.clientY;
+  const q = pt.matrixTransform(svg.getScreenCTM().inverse());
+  const at = [Math.round(q.x / U * 100) / 100, Math.round(q.y / U * 100) / 100];
+  if (at[0] < BX0 || at[0] > BX1 || at[1] < BY0 || at[1] > BY1) return;
+  const { key, label } = st.placing;
+  Object.keys(st.data.assign).forEach(k => { if (k !== key && st.data.assign[k].label === label) delete st.data.assign[k]; });
+  st.data.assign[key] = { label, at };
+  st.placing = null;
+  save(); estimate(); renderPlan(true);
+  say(`${label}を、${placeName(at)}に配置しました。`);
+});
+$('placingCancel').onclick = () => { st.placing = null; renderPlan(true); };
 
 // ------------------------------------------------------------ ビーコンタブ
 const rows = new Map();
@@ -701,6 +757,7 @@ function renderBeacons() {
       el.innerHTML = `<div class="btop"><span class="name"></span><span class="btype"></span></div>
         <div class="bmeta"></div>
         <div class="bnums"><span><b class="r"></b> dBm</span><span class="rssi"><i></i></span><span>約<b class="d"></b>m</span></div>
+        <label class="assign">図面の位置<select data-act="assign"></select></label>
         <div class="bbtns"><button class="iconbtn" data-act="cal">1mで補正</button><button class="iconbtn" data-act="reset" hidden>補正を戻す</button></div>`;
       rows.set(b.key, el);
     }
@@ -709,7 +766,19 @@ function renderBeacons() {
     const label = mb ? mb.label : null;
     el.classList.toggle('placed', !!mb);
     el.classList.toggle('stale', b.ageMs > 3000);
-    el.querySelector('.name').textContent = mb ? `${mb.label}（${placeName(mb.at)}）` : (b.type === 'Eddystone' ? 'Eddystone（未対応）' : `Minor ${b.minor}（図面に対応なし）`);
+    el.querySelector('.name').textContent = mb ? `${mb.label}（${placeName(mb.at)}）` : '図面に未配置';
+    const sel = el.querySelector('select');
+    if (document.activeElement !== sel) {
+      const a = st.data.assign[b.key];
+      const taken = new Map(Object.entries(st.data.assign).filter(([k]) => k !== b.key).map(([k, v]) => [v.label, k]));
+      const auto = !a && mb ? `自動（Minor ${b.minor} → ${mb.label}）` : '自動（Minor 番号で対応）';
+      let opts = `<option value="">${esc(auto)}</option>`;
+      opts += BEACONS.map(x => `<option value="${esc(x.label)}">${esc(x.label)}：${esc(placeName(x.at))}${taken.has(x.label) ? '（使用中）' : ''}</option>`).join('');
+      if (a && a.at) opts += `<option value="@keep">${esc(a.label)}：自分で配置した場所</option>`;
+      opts += `<option value="@tap">図面をタップして場所を指定…</option>`;
+      if (sel.dataset.sig !== opts) { sel.innerHTML = opts; sel.dataset.sig = opts; }
+      sel.value = a ? (a.at ? '@keep' : a.label) : '';
+    }
     el.querySelector('.btype').textContent = b.type;
     const cal = label && typeof st.data.tx[label] === 'number';
     el.querySelector('.bmeta').textContent = b.type === 'Eddystone'
@@ -722,6 +791,26 @@ function renderBeacons() {
     el.querySelector('[data-act="reset"]').hidden = !cal;
   });
 }
+$('beaconList').addEventListener('change', e => {
+  const sel = e.target.closest('select[data-act="assign"]'); if (!sel) return;
+  const key = sel.closest('.bcard').dataset.key, v = sel.value;
+  if (v === '@keep') return;
+  if (v === '@tap') {
+    const a = st.data.assign[key];
+    st.placing = { key, label: a && a.at ? a.label : nextCustomLabel() };
+    sel.blur();
+    show('plan');
+    return;
+  }
+  if (!v) delete st.data.assign[key];
+  else {
+    Object.keys(st.data.assign).forEach(k => { if (k !== key && st.data.assign[k].label === v) delete st.data.assign[k]; });
+    st.data.assign[key] = { label: v };
+    const mb = BEACONS.find(x => x.label === v);
+    say(`${v}、${placeName(mb.at)}に割り当てました。`);
+  }
+  save(); estimate(); sel.blur(); renderBeacons();
+});
 $('beaconList').addEventListener('click', e => {
   const btn = e.target.closest('button'); if (!btn) return;
   const b = st.beacons.find(x => x.key === btn.closest('.bcard').dataset.key); if (!b) return;
