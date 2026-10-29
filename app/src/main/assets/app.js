@@ -1,5 +1,6 @@
-/* ミミナビ 画面ロジック
- * ネイティブ側（MainActivity.java）とは次の窓口でやりとりする：
+/* ミミナビ 画面ロジック（地図データ版）
+ * 地図は map.js（tools/drawio_to_map.py が draw.io から自動生成）の window.MIMI_MAP を使う。
+ * ネイティブ側（MainActivity.java）とのやりとり：
  *   JS → ネイティブ : window.MimiNative.startScan() / speak() / listen() / save() など
  *   ネイティブ → JS : window.__native(type, data)  type = beacons | status | heading | speech
  * PC のブラウザで開いた場合は、疑似ビーコンで画面の動きを確認できる。
@@ -8,62 +9,74 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const N = window.MimiNative || null;
+const MAP = window.MIMI_MAP;
 
-// ------------------------------------------------------------ 事業所の図面
-// 1マス = 0.6m。外壁の内側 14×12 マス ≒ 60m²（8.4m × 7.2m）
-const CELL_M = 0.6;
-const C = 20; // SVG 上の1マスの大きさ
-const OFFICE = {
-  name: '事業所',
-  start: [1, 6], // 現在地が分からないときの出発点（入口付近）
-  grid: [
-    "################",
-    "#..............#",
-    "#..............#",
-    "#..............#",
-    "#..............#",
-    "########.#######",
-    "#........#.....#",
-    "#........#.....#",
-    "#..........#####",
-    "########.#.....#",
-    "#........#.....#",
-    "#........#.....#",
-    "#........#.....#",
-    "################"],
-  rooms: [
-    { label: '事務所', x: 1, y: 1, w: 14, h: 4 },
-    { label: '会議室(2)', x: 10, y: 6, w: 5, h: 2 },
-    { label: '会議室(4)', x: 10, y: 9, w: 5, h: 4 },
-    { label: '会議室(8)', x: 1, y: 10, w: 8, h: 3 },
-  ],
-  // デモで想定していたビーコン設置位置（入口＋各目的地）
-  suggested: [[8, 6, '入口'], [8, 4, '事務所前'], [8, 8, '廊下'], [10, 7, '会議室(2)'], [10, 9, '会議室(4)'], [8, 10, '会議室(8)']],
-  dests: [
-    { id: 'r8', name: '会議室(8)', at: [8, 10], future: '会議室(8)：14時まで予約あり' },
-    { id: 'r4', name: '会議室(4)', at: [10, 9], via: [[8, 6], [8, 8]], future: '会議室(4)：空き（次の予約は15時から）' },
-    { id: 'r2', name: '会議室(2)', at: [10, 7], via: [[8, 6], [8, 8]], future: '会議室(2)：使用中（あと20分）' },
-    { id: 'office', name: 'オフィス（事務所）', at: [8, 4] },
-  ],
-  samples: ['会議室(8)はどこ？', '会議室(4)に行きたい', '会議室(2)', '事務所は？'],
-};
-const W = OFFICE.grid[0].length, H = OFFICE.grid.length;
-const DIRS = [[0, -1], [1, 0], [0, 1], [-1, 0]]; // 図面の上・右・下・左
+// ------------------------------------------------------------ 地図データ
+const G = MAP.grid;
+const CELL = G.cell;                // 1マス（m）
+const [GX, GY] = G.origin;
+const GW = G.w, GH = G.h, ROWS = G.rows;
+const STEP_COST = { '.': 0, '2': 1.5, '1': 4, 'D': 0, 'S': 0.5 };   // 壁ぎわほど通りにくく
+const TURN_COST = 3;                // 曲がる回数を減らす
+const U = 100;                      // 描画単位：1m = 100
+const K = 3;                        // 目印の大きさの倍率
+const [BX0, BY0, BX1, BY1] = MAP.bounds;
+const DIRS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
 const DNAME = ['図面の上', '図面の右', '図面の下', '図面の左'];
-const walkable = (x, y) => x >= 0 && y >= 0 && x < W && y < H && OFFICE.grid[y][x] !== '#';
+const DESTS = MAP.dests;
+const BEACONS = MAP.beacons;        // [{label, minor, at}]
+const ENTRY = (MAP.doors.find(d => /入口/.test(d.name)) || {}).cell || DESTS[0].cell;
+
+const walkable = (x, y) => x >= 0 && y >= 0 && x < GW && y < GH && ROWS[y][x] !== '#';
+const cellCenter = c => [GX + (c[0] + 0.5) * CELL, GY + (c[1] + 0.5) * CELL];
+const cellOf = p => [Math.floor((p[0] - GX) / CELL), Math.floor((p[1] - GY) / CELL)];
+const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+function nearestFree(p) {
+  const [cx, cy] = cellOf(p);
+  for (let r = 0; r <= 20; r++) {
+    let best = null, bd = 1e9;
+    for (let y = cy - r; y <= cy + r; y++) for (let x = cx - r; x <= cx + r; x++) {
+      if (Math.max(Math.abs(x - cx), Math.abs(y - cy)) !== r || !walkable(x, y)) continue;
+      const d = dist(cellCenter([x, y]), p);
+      if (d < bd) { bd = d; best = [x, y]; }
+    }
+    if (best) return best;
+  }
+  return ENTRY;
+}
+function inPoly(p, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i], [xj, yj] = poly[j];
+    if ((yi > p[1]) !== (yj > p[1]) && p[0] < (xj - xi) * (p[1] - yi) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+const roomName = n => n.replace(/[（(][^）)]*[)）]$/, '');
+function placeName(p) {
+  const d = DESTS.find(d => dist(d.at, p) < 1.2);
+  if (d) return d.name;
+  const r = MAP.rooms.find(r => inPoly(p, r.poly));
+  return r ? roomName(r.name) : '通路';
+}
+const spoken = name => name.replace(/[（(]\s*([^）)]*?)\s*[)）]/g, '$1');
 
 // ------------------------------------------------------------ 状態
 const st = {
   view: 'home', tab: 'guide', sound: true,
   status: null, beacons: [], others: 0, scanning: false,
-  heading: null, pos: null, placing: null, nav: null,
-  data: { placements: {}, n: 2.0, northOffset: null },
+  heading: null, pos: null, nav: null,
+  data: { n: 2.0, tx: {}, northOffset: null },
 };
-
 function load() {
   try {
     const raw = N ? N.load() : localStorage.getItem('miminavi');
-    if (raw) Object.assign(st.data, JSON.parse(raw));
+    if (raw) {
+      const d = JSON.parse(raw);
+      if (typeof d.n === 'number') st.data.n = d.n;
+      if (d.tx && typeof d.tx === 'object') st.data.tx = d.tx;
+      if (typeof d.northOffset === 'number') st.data.northOffset = d.northOffset;
+    }
   } catch (e) { /* 初回など */ }
 }
 function save() {
@@ -101,18 +114,15 @@ function show(v) {
   if (v === 'beacons') renderBeacons();
   if (v === 'home') renderHome();
 }
-let guideView = 'home'; // 「案内」タブで最後に開いていた画面
+let guideView = 'home';
 $('tabbar').addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b) return;
   if (st.tab === 'guide') guideView = st.view;
   if (b.dataset.tab === 'guide') show(guideView);
   else show(b.dataset.tab);
 });
-
-// 端末の戻るボタン（true を返すとアプリ内で処理済み）
 window.__back = () => {
   if (!$('dark').hidden) { $('dark').hidden = true; return true; }
-  if (st.placing) { cancelPlacing(); return true; }
   if (st.tab !== 'guide') { show(guideView); return true; }
   if (st.view !== 'home') { stopNav(); show('home'); return true; }
   return false;
@@ -125,7 +135,6 @@ window.__native = (type, d) => {
   else if (type === 'heading') onHeading(d);
   else if (type === 'speech') onSpeech(d);
 };
-
 function onBeacons(d) {
   st.beacons = d.beacons || [];
   st.others = d.others || 0;
@@ -138,128 +147,132 @@ function onBeacons(d) {
   if (st.view === 'nav') { updateDyn($('navMap')); navRealUpdate(); }
 }
 
-// ------------------------------------------------------------ 距離と位置の推定
-function distanceOf(b) {
-  const p = st.data.placements[b.key];
-  const tx = p && typeof p.tx === 'number' ? p.tx : b.tx;
-  const d = Math.pow(10, (tx - b.rssi) / (10 * st.data.n));
-  return Math.min(30, Math.max(0.1, d));
+// ------------------------------------------------------------ ビーコン → 図面の B-xx（Minor 番号で対応）
+const beaconOf = b => (b.type === 'Eddystone' ? null : BEACONS.find(x => x.minor === b.minor)) || null;
+function distanceOf(b, label) {
+  const tx = typeof st.data.tx[label] === 'number' ? st.data.tx[label] : b.tx;
+  return Math.min(30, Math.max(0.1, Math.pow(10, (tx - b.rssi) / (10 * st.data.n))));
 }
-const cellCenterM = (x, y) => [(x + 0.5) * CELL_M, (y + 0.5) * CELL_M];
-
+// 受信中で図面に対応するもの（同じ Minor が複数あれば強い方）
+function seenByLabel() {
+  const m = new Map();
+  st.beacons.forEach(b => {
+    if (b.ageMs > 5000) return;
+    const mb = beaconOf(b); if (!mb) return;
+    const cur = m.get(mb.label);
+    if (!cur || b.rssi > cur.b.rssi) m.set(mb.label, { b, mb, d: distanceOf(b, mb.label) });
+  });
+  return m;
+}
 function estimate() {
-  const used = st.beacons
-    .filter(b => st.data.placements[b.key] && b.ageMs < 5000)
-    .map(b => ({ b, p: st.data.placements[b.key], d: distanceOf(b) }))
-    .sort((a, c) => a.d - c.d)
-    .slice(0, 4); // 近い順に最大4台
+  const used = [...seenByLabel().values()].sort((a, c) => a.d - c.d).slice(0, 4);
   if (!used.length) { st.pos = null; return; }
   let sx = 0, sy = 0, sw = 0;
   used.forEach(u => {
     const w = 1 / Math.pow(Math.max(u.d, 0.3), 2);
-    const [mx, my] = cellCenterM(u.p.x, u.p.y);
-    sx += w * mx; sy += w * my; sw += w;
+    sx += w * u.mb.at[0]; sy += w * u.mb.at[1]; sw += w;
   });
   let x = sx / sw, y = sy / sw;
-  if (st.pos) { // 揺れを抑えるため前回値となめらかにつなぐ
-    x = st.pos.x + 0.4 * (x - st.pos.x);
-    y = st.pos.y + 0.4 * (y - st.pos.y);
-  }
-  st.pos = { x, y, acc: used[0].d, used, cell: snapCell(x / CELL_M - 0.5, y / CELL_M - 0.5) };
-}
-function snapCell(fx, fy) {
-  let best = null, bd = 1e9;
-  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-    if (!walkable(x, y)) continue;
-    const d = (x - fx) ** 2 + (y - fy) ** 2;
-    if (d < bd) { bd = d; best = [x, y]; }
-  }
-  return best;
-}
-function placeName(x, y) {
-  const s = OFFICE.suggested.find(q => q[0] === x && q[1] === y);
-  if (s) return s[2];
-  const r = OFFICE.rooms.find(r => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
-  return r ? r.label : '通路';
+  if (st.pos) { x = st.pos.x + 0.4 * (x - st.pos.x); y = st.pos.y + 0.4 * (y - st.pos.y); }
+  const cell = nearestFree([x, y]);
+  st.pos = { x, y, acc: used[0].d, used, cell };
 }
 
 // ------------------------------------------------------------ 図面の描画
+const P = p => `${(p[0] * U).toFixed(1)},${(p[1] * U).toFixed(1)}`;
+const poly = pts => pts.map(P).join(' ');
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 function buildMap(el, opt = {}) {
-  let s = `<svg viewBox="0 0 ${W * C} ${H * C}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="事業所の図面">`;
-  s += `<rect width="${W * C}" height="${H * C}" fill="var(--floor)"/>`;
-  OFFICE.grid.forEach((row, y) => [...row].forEach((ch, x) => {
-    if (ch !== '#') return;
-    const edge = x === 0 || y === 0 || x === W - 1 || y === H - 1;
-    s += `<rect x="${x * C}" y="${y * C}" width="${C}" height="${C}" fill="${edge ? 'var(--slate)' : 'var(--shelf)'}" ${edge ? 'opacity=".85"' : ''}/>`;
-  }));
-  OFFICE.rooms.forEach(r => {
-    s += `<text x="${(r.x + r.w / 2) * C}" y="${(r.y + r.h / 2) * C + 4}" text-anchor="middle" font-size="11" font-weight="700" fill="var(--muted)" opacity=".75" font-family="var(--f-display)">${r.label}</text>`;
+  const vw = (BX1 - BX0) * U, vh = (BY1 - BY0) * U;
+  // 案内中はルートの周りだけを拡大して表示する
+  let v = [BX0, BY0, BX1 - BX0, BY1 - BY0];
+  if (opt.path) {
+    const pts = opt.path.map(cellCenter).concat([opt.dest.at]);
+    const pad = 1.8;
+    let x0 = Math.min(...pts.map(p => p[0])) - pad, x1 = Math.max(...pts.map(p => p[0])) + pad;
+    let y0 = Math.min(...pts.map(p => p[1])) - pad, y1 = Math.max(...pts.map(p => p[1])) + pad;
+    const box = el.getBoundingClientRect(), ar = box.width && box.height ? box.width / box.height : 0.8;
+    if ((x1 - x0) / (y1 - y0) < ar) { const w = (y1 - y0) * ar, c = (x0 + x1) / 2; x0 = c - w / 2; x1 = c + w / 2; }
+    else { const h = (x1 - x0) / ar, c = (y0 + y1) / 2; y0 = c - h / 2; y1 = c + h / 2; }
+    v = [x0, y0, x1 - x0, y1 - y0];
+  }
+  let s = `<svg viewBox="${v[0] * U} ${v[1] * U} ${v[2] * U} ${v[3] * U}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="${esc(MAP.name)}の図面">`;
+  s += `<rect x="${(v[0] - 5) * U}" y="${(v[1] - 5) * U}" width="${(v[2] + 10) * U}" height="${(v[3] + 10) * U}" fill="var(--surface)"/>`;
+  MAP.rooms.forEach(r => { s += `<polygon points="${poly(r.poly)}" fill="var(--floor)" stroke="none"/>`; });
+  MAP.chairs.forEach(c => { s += `<polygon points="${poly(c.poly)}" fill="none" stroke="var(--line)" stroke-width="3" stroke-dasharray="6 5"/>`; });
+  MAP.obstacles.forEach(o => {
+    const dark = o.kind === 'pillar' || o.kind === 'equipment';
+    s += `<polygon points="${poly(o.poly)}" fill="${dark ? 'var(--slate)' : 'var(--shelf)'}" ${dark ? 'opacity=".85"' : ''}/>`;
   });
-  OFFICE.suggested.forEach(([x, y]) => {
-    s += `<circle cx="${(x + .5) * C}" cy="${(y + .5) * C}" r="7" fill="none" stroke="var(--teal)" stroke-width="1.2" stroke-dasharray="2.5 2.5" opacity=".7"/>`;
+  MAP.rooms.forEach(r => {
+    const xs = r.poly.map(p => p[0]), ys = r.poly.map(p => p[1]);
+    s += `<text x="${(Math.min(...xs) + 0.12) * U}" y="${(Math.min(...ys) + 0.38) * U}" font-size="${opt.small ? 26 : 30}" font-weight="700" fill="var(--muted)" opacity=".8" font-family="var(--f-display)">${esc(roomName(r.name))}</text>`;
+  });
+  MAP.walls.forEach(w => {
+    const st_ = w.kind === 'glass' ? 'stroke="#5B9BD5" stroke-width="7"' : w.kind === 'partition' ? 'stroke="var(--muted)" stroke-width="5"' : 'stroke="var(--slate)" stroke-width="9"';
+    s += `<polyline points="${poly(w.pts)}" fill="none" ${st_} stroke-linecap="square" stroke-linejoin="miter"/>`;
+  });
+  MAP.doors.forEach(d => {
+    if (d.kind === 'opening') s += `<polygon points="${poly(d.poly)}" fill="none" stroke="var(--teal)" stroke-width="3" stroke-dasharray="8 6"/>`;
+    else s += `<polygon points="${poly(d.poly)}" fill="${d.access === 'staff' ? 'var(--coral)' : 'var(--teal)'}"/>`;
+  });
+  if (opt.allDests) DESTS.forEach(d => {
+    s += `<g transform="translate(${P(d.at)})"><path d="${pinPath(0.8)}" fill="var(--coral)" opacity=".9"/></g>`;
+    s += `<text x="${(d.at[0] + 0.18) * U}" y="${(d.at[1] - 0.05) * U}" font-size="24" font-weight="700" fill="var(--coral)" font-family="var(--f-display)">${esc(d.name)}</text>`;
   });
   if (opt.path) {
-    const pts = opt.path.map(p => `${(p[0] + .5) * C},${(p[1] + .5) * C}`).join(' ');
-    s += `<polyline points="${pts}" fill="none" stroke="var(--teal)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity=".35"/>`;
-    s += `<polyline class="walked" points="" fill="none" stroke="var(--teal)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>`;
+    s += `<polyline points="${poly(opt.path.map(cellCenter))}" fill="none" stroke="var(--teal)" stroke-width="${5 * K}" stroke-linecap="round" stroke-linejoin="round" opacity=".35"/>`;
+    s += `<polyline class="walked" points="" fill="none" stroke="var(--teal)" stroke-width="${5 * K}" stroke-linecap="round" stroke-linejoin="round"/>`;
   }
-  if (opt.dest) {
-    const [dx, dy] = opt.dest.at;
-    s += `<g transform="translate(${(dx + .5) * C} ${(dy + .5) * C})"><path d="M0 4 C-6 -4 -8 -7 -8 -11 a8 8 0 0 1 16 0 c0 4 -2 7 -8 15z" fill="var(--coral)"/><circle cy="-11" r="3" fill="#fff"/></g>`;
-  }
+  if (opt.dest) s += `<g transform="translate(${P(opt.dest.at)})"><path d="${pinPath(1.4)}" fill="var(--coral)"/><circle cy="${-15 * 1.4 * K}" r="${3.5 * 1.4 * K}" fill="#fff"/></g>`;
   s += `<g class="dyn"></g>`;
-  if (opt.path) s += `<g class="me" transform="translate(-100 -100)"><circle r="13" fill="var(--coral)" opacity=".18"/><path d="M0 -9 L7 7 L0 3 L-7 7 Z" fill="var(--coral)" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/></g>`;
-  s += `<text x="${W * C - 6}" y="${H * C - 6}" text-anchor="end" font-family="var(--f-mono)" font-size="9" fill="#fff">1マス=${CELL_M}m</text></svg>`;
+  if (opt.path) s += `<g class="me" transform="translate(-9999 -9999)"><circle r="${13 * K}" fill="var(--coral)" opacity=".18"/><path d="M0 ${-9 * K} L${7 * K} ${7 * K} L0 ${3 * K} L${-7 * K} ${7 * K} Z" fill="var(--coral)" stroke="#fff" stroke-width="${1.5 * K}" stroke-linejoin="round"/></g>`;
+  const ex = (v[0] + v[2]) * U, ey = (v[1] + v[3]) * U;
+  s += `<text x="${ex - 20}" y="${ey - 20}" text-anchor="end" font-family="var(--f-mono)" font-size="26" fill="var(--muted)">↑図面の上　━ 1m</text>`;
+  s += `<line x1="${ex - 120}" y1="${ey - 50}" x2="${ex - 20}" y2="${ey - 50}" stroke="var(--muted)" stroke-width="6"/></svg>`;
   el.innerHTML = s;
   el.dataset.nav = opt.path ? '1' : '';
+  el.style.setProperty('--map-ratio', (vw / vh).toFixed(3));
   updateDyn(el);
 }
-
+// 地図ピン（先端が原点）
+function pinPath(scale) {
+  const k = K * scale;
+  return `M0 0 C${-6 * k} ${-8 * k} ${-8 * k} ${-11 * k} ${-8 * k} ${-15 * k} a${8 * k} ${8 * k} 0 0 1 ${16 * k} 0 c0 ${4 * k} ${-2 * k} ${7 * k} ${-8 * k} ${15 * k}z`;
+}
 function updateDyn(el) {
   const g = el.querySelector('.dyn'); if (!g) return;
-  const seen = new Map(st.beacons.filter(b => b.ageMs < 5000).map(b => [b.key, b]));
-  const usedKeys = new Set(st.pos ? st.pos.used.map(u => u.b.key) : []);
+  const seen = seenByLabel();
+  const usedSet = new Set(st.pos ? st.pos.used.map(u => u.mb.label) : []);
   let s = '';
-  Object.entries(st.data.placements).forEach(([key, p]) => {
-    const b = seen.get(key);
-    const cx = (p.x + .5) * C, cy = (p.y + .5) * C;
-    if (b) {
-      const d = distanceOf(b);
-      const rr = Math.min(d / CELL_M * C, W * C); // 推定距離の円
-      if (usedKeys.has(key)) s += `<circle cx="${cx}" cy="${cy}" r="${rr.toFixed(1)}" fill="none" stroke="var(--teal)" stroke-width="1" opacity=".35"/>`;
-      s += `<circle cx="${cx}" cy="${cy}" r="6.5" fill="var(--teal)"/>`;
-    } else {
-      s += `<circle cx="${cx}" cy="${cy}" r="5.5" fill="var(--gray)"/>`;
-    }
-    s += `<text x="${cx}" y="${cy - 10}" text-anchor="middle" font-family="var(--f-mono)" font-size="8.5" fill="var(--ink)">${esc(p.label)}</text>`;
+  BEACONS.forEach(mb => {
+    const hit = seen.get(mb.label);
+    const [x, y] = mb.at;
+    if (hit && usedSet.has(mb.label)) s += `<circle cx="${x * U}" cy="${y * U}" r="${Math.min(hit.d, 12) * U}" fill="none" stroke="var(--teal)" stroke-width="3" opacity=".35"/>`;
+    s += `<circle cx="${x * U}" cy="${y * U}" r="${hit ? 6.5 * K : 5.5 * K}" fill="${hit ? 'var(--teal)' : 'var(--gray)'}"/>`;
+    s += `<text x="${x * U}" y="${(y * U) - 9 * K}" text-anchor="middle" font-family="var(--f-mono)" font-size="24" fill="var(--ink)">${esc(mb.label)}</text>`;
   });
-  // 案内中（デモ歩行以外）は矢印マーカーで現在地を示すので、図面タブだけ点で描く
-  if (st.pos && !(el.dataset.nav === '1')) {
-    const px = st.pos.x / CELL_M * C, py = st.pos.y / CELL_M * C;
-    const ar = Math.max(6, Math.min(st.pos.acc, 4) / CELL_M * C);
-    s += `<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="${ar.toFixed(1)}" fill="var(--coral)" opacity=".15"/>`;
-    s += `<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="7" fill="var(--coral)" stroke="#fff" stroke-width="2"/>`;
-  }
-  if (st.placing && el.id === 'planMap') {
-    s += `<rect x="1" y="1" width="${W * C - 2}" height="${H * C - 2}" fill="none" stroke="var(--coral)" stroke-width="3" stroke-dasharray="8 5" rx="4"/>`;
+  if (st.pos && el.dataset.nav !== '1') {
+    const px = st.pos.x * U, py = st.pos.y * U;
+    s += `<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="${(Math.max(0.3, Math.min(st.pos.acc, 4)) * U).toFixed(1)}" fill="var(--coral)" opacity=".15"/>`;
+    s += `<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="${7 * K}" fill="var(--coral)" stroke="#fff" stroke-width="${2 * K}"/>`;
   }
   g.innerHTML = s;
 }
-function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 
 // ------------------------------------------------------------ ホーム
 function renderHome() {
-  $('dlname').textContent = `簡易マップ：事業所（${(14 * CELL_M).toFixed(1)}m × ${(12 * CELL_M).toFixed(1)}m・約60m²）`;
+  $('venueName').textContent = MAP.name;
+  $('venueDesc').textContent = `${DESTS.slice(0, 3).map(d => spoken(d.name)).join('・')}など${DESTS.length}か所へ案内`;
+  $('dlname').textContent = `簡易マップ：${MAP.name}（${(BX1 - BX0 - 0.8).toFixed(1)}m × ${(BY1 - BY0 - 0.8).toFixed(1)}m）`;
   renderStatus(); renderHomeKpi();
 }
 function renderHomeKpi() {
-  const placed = Object.keys(st.data.placements);
-  const seen = st.beacons.filter(b => b.ageMs < 5000 && st.data.placements[b.key]).length;
-  $('kPlaced').textContent = placed.length;
-  $('kSeen').textContent = seen;
+  $('kPlaced').textContent = BEACONS.length;
+  $('kSeen').textContent = seenByLabel().size;
   $('kPos').textContent = st.pos
-    ? `現在地：${placeName(st.pos.cell[0], st.pos.cell[1])} 付近（誤差 約${st.pos.acc.toFixed(1)}m）`
-    : placed.length ? '現在地：配置したビーコンを受信していません' : '現在地：まず「ビーコン」タブで iPhone を図面に配置してください';
+    ? `現在地：${placeName([st.pos.x, st.pos.y])} 付近（誤差 約${st.pos.acc.toFixed(1)}m）`
+    : '現在地：図面のビーコンを受信していません（iPhone の Minor を B-xx の番号に合わせてください）';
 }
 function renderStatus() {
   const s = st.status;
@@ -291,8 +304,7 @@ $('statusBtns').addEventListener('click', e => {
 function renderChip() {
   const c = $('scanChip');
   const scanning = st.scanning || (st.status && st.status.scanning);
-  const n = st.beacons.filter(b => b.ageMs < 5000).length;
-  if (scanning) { c.textContent = `BLE 受信中・ビーコン${n}台`; c.className = 'chip'; }
+  if (scanning) { c.textContent = `BLE 受信中・図面のビーコン${seenByLabel().size}台`; c.className = 'chip'; }
   else { c.textContent = 'BLE 停止中'; c.className = 'chip warn'; }
 }
 $('start').onclick = () => { show('calib'); say('ミミナビを起動しました。図面の上の方向を向いて、ボタンを押してください。'); };
@@ -313,13 +325,21 @@ $('calibBtn').onclick = () => {
 };
 $('calibSkip').onclick = () => { say('行き先を話してください。'); toListen(); };
 
-// ------------------------------------------------------------ 行き先の入力
-function toListen() {
+// ------------------------------------------------------------ 行き先の入力と特定
+function toListen(cands) {
   show('listen');
-  $('transcript').innerHTML = '行き先を話してください<small>マイクを押して話すか、下の例を押してください</small>';
-  $('samples').innerHTML = OFFICE.samples.map(s => `<button type="button">${s}</button>`).join('');
+  $('transcript').innerHTML = '行き先を話してください<small>マイクを押して話すか、下の行き先を押してください</small>';
+  renderSamples(cands);
 }
-$('samples').addEventListener('click', e => { if (e.target.tagName === 'BUTTON') hear([e.target.textContent]); });
+function renderSamples(cands) {
+  const list = cands || DESTS;
+  $('samples').innerHTML = list.map(d => `<button type="button" data-id="${esc(d.id)}" class="${cands ? 'cand' : ''}">${esc(d.name)}</button>`).join('');
+}
+$('samples').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  const d = DESTS.find(x => x.id === b.dataset.id);
+  if (d) choose(d, d.name);
+});
 $('mic').onclick = () => {
   if (N) {
     hush();
@@ -327,79 +347,144 @@ $('mic').onclick = () => {
     $('transcript').innerHTML = '聞き取り中…<small>&nbsp;</small>';
     N.listen();
   } else {
-    hear([OFFICE.samples[Math.floor(Math.random() * OFFICE.samples.length)]]);
+    const d = DESTS[Math.floor(Math.random() * DESTS.length)];
+    hear([spoken(d.name) + 'に行きたい']);
   }
 };
 function onSpeech(list) {
   $('mic').classList.remove('on');
-  if (list === null) { $('transcript').innerHTML = '音声認識を使えません<small>この端末に音声入力アプリがありません。文字で入力してください</small>'; return; }
+  if (list === null) { $('transcript').innerHTML = '音声認識を使えません<small>この端末に音声入力アプリがありません。行き先のボタンか文字で入力してください</small>'; return; }
   if (!list.length) { $('transcript').innerHTML = '聞き取れませんでした<small>もう一度マイクを押してください</small>'; return; }
   hear(list);
 }
 $('typed').addEventListener('submit', e => { e.preventDefault(); const q = $('q').value.trim(); if (q) hear([q]); $('q').value = ''; $('q').blur(); });
 $('backHome').onclick = () => { stopNav(); show('home'); };
 
-function normalize(t) {
-  return t.normalize('NFKC').toLowerCase().replace(/\s/g, '')
-    .replace(/八|はち/g, '8').replace(/四|よん/g, '4').replace(/二/g, '2');
+const KANJI = '一二三四五六七八九';
+function norm(t) {
+  return String(t).normalize('NFKC').toLowerCase()
+    .replace(/ミーティング/g, 'mtg')
+    .replace(/[一二三四五六七八九]/g, c => String(KANJI.indexOf(c) + 1))
+    .replace(/かいぎしつ/g, '会議室').replace(/じむしょ/g, '事務所').replace(/といれ/g, 'トイレ')
+    .replace(/きゅうとうしつ/g, '給湯室').replace(/うけつけ/g, '受付').replace(/しょこ/g, '書庫')
+    .replace(/はち/g, '8').replace(/よん/g, '4')
+    .replace(/[\s()「」『』、。,.!?・"'“”]/g, '');
 }
+const DEST_KEYS = DESTS.map(d => ({ d, keys: [...new Set([d.name, spoken(d.name), ...d.keywords].map(norm).filter(Boolean))] }));
+// いちばん長く一致した呼び方の目的地。同点が複数なら候補として返す
 function matchDest(text) {
-  const t = normalize(text);
-  let m = t.match(/会議室\(?([248])/) || t.match(/([248])番?(の)?会議室/) || t.match(/かいぎしつ\(?([248])/)
-    || (/会議|かいぎ/.test(t) && t.match(/([248])/)); // 「かいぎ室8番」など認識結果の揺れ
-  if (m) return OFFICE.dests.find(d => d.id === 'r' + m[1]);
-  if (/事務所|オフィス|じむしょ/.test(t)) return OFFICE.dests.find(d => d.id === 'office');
-  return null;
+  const t = norm(text);
+  let best = 0, hits = [];
+  DEST_KEYS.forEach(({ d, keys }) => {
+    const sc = Math.max(0, ...keys.filter(k => t.includes(k)).map(k => k.length));
+    if (sc > best) { best = sc; hits = [d]; } else if (sc === best && sc > 0) hits.push(d);
+  });
+  return hits;
 }
 function hear(candidates) {
   $('mic').classList.remove('on');
-  let dest = null, heard = candidates[0];
-  for (const c of candidates) { const d = matchDest(c); if (d) { dest = d; heard = c; break; } }
-  if (!dest) {
-    $('transcript').innerHTML = `「${esc(heard)}」<small>見つかりませんでした。例：会議室(8)、事務所</small>`;
+  let hits = [], heard = candidates[0];
+  for (const c of candidates) { const h = matchDest(c); if (h.length) { hits = h; heard = c; break; } }
+  if (!hits.length) {
+    $('transcript').innerHTML = `「${esc(heard)}」<small>見つかりませんでした。下の行き先から選ぶか、もう一度お話しください</small>`;
     say('すみません、見つかりませんでした。もう一度お話しください。');
     return;
   }
+  if (hits.length > 1) {
+    $('transcript').innerHTML = `「${esc(heard)}」<small>行き先が${hits.length}つあります。どちらですか？</small>`;
+    renderSamples(hits);
+    say(`${hits.map(d => spoken(d.name)).join('と、')}、どちらですか？`);
+    return;
+  }
+  choose(hits[0], heard);
+}
+function choose(dest, heard) {
   $('transcript').innerHTML = `${esc(dest.name)}<small>「${esc(heard)}」→ 目的地を特定しました</small>`;
-  say(`${dest.name}ですね。ルートを計算します。`);
+  say(`${spoken(dest.name)}ですね。ルートを計算します。`);
   setTimeout(() => startNav(dest), 1100);
 }
 
-// ------------------------------------------------------------ ルート探索（曲がる回数が少ない最短ルート）
+// ------------------------------------------------------------ ルート探索（ダイクストラ法：壁ぎわと曲がり角を避けた最短ルート）
 function route(s, g) {
-  const INF = 1e9, dist = new Map(), prev = new Map();
-  const key = (x, y, d) => x + ',' + y + ',' + d; const pq = [];
-  for (let d = 0; d < 4; d++) { dist.set(key(s[0], s[1], d), 0); pq.push([0, s[0], s[1], d]); }
-  while (pq.length) {
-    pq.sort((a, b) => a[0] - b[0]); const [c, x, y, d] = pq.shift();
-    if (c > (dist.get(key(x, y, d)) ?? INF)) continue;
+  if (!walkable(s[0], s[1])) s = nearestFree(cellCenter(s));
+  const n = GW * GH * 4, cost = new Float64Array(n).fill(Infinity), prev = new Int32Array(n).fill(-1);
+  const heap = [];   // [cost, state]
+  const push = (c, k) => { heap.push([c, k]); let i = heap.length - 1; while (i > 0) { const p = (i - 1) >> 1; if (heap[p][0] <= heap[i][0]) break; [heap[p], heap[i]] = [heap[i], heap[p]]; i = p; } };
+  const pop = () => { const top = heap[0], last = heap.pop(); if (heap.length) { heap[0] = last; let i = 0; for (;;) { const l = 2 * i + 1, r = l + 1; let m = i; if (l < heap.length && heap[l][0] < heap[m][0]) m = l; if (r < heap.length && heap[r][0] < heap[m][0]) m = r; if (m === i) break; [heap[m], heap[i]] = [heap[i], heap[m]]; i = m; } } return top; };
+  const key = (x, y, d) => (y * GW + x) * 4 + d;
+  for (let d = 0; d < 4; d++) { const k = key(s[0], s[1], d); cost[k] = 0; push(0, k); }
+  while (heap.length) {
+    const [c, k] = pop();
+    if (c > cost[k]) continue;
+    const d = k % 4, xy = (k - d) / 4, x = xy % GW, y = (xy - x) / GW;
     if (x === g[0] && y === g[1]) {
-      const path = [[x, y]]; let k = key(x, y, d);
-      while (prev.has(k)) { const p = prev.get(k); path.unshift([p[0], p[1]]); k = key(...p); }
-      return path.filter((q, i) => i === 0 || q[0] !== path[i - 1][0] || q[1] !== path[i - 1][1]);
+      const path = [];
+      for (let q = k; q >= 0; q = prev[q]) { const qd = q % 4, qxy = (q - qd) / 4; const p = [qxy % GW, (qxy - qxy % GW) / GW]; if (!path.length || path[0][0] !== p[0] || path[0][1] !== p[1]) path.unshift(p); }
+      return path;
     }
     for (let nd = 0; nd < 4; nd++) {
       const nx = x + DIRS[nd][0], ny = y + DIRS[nd][1];
       if (!walkable(nx, ny)) continue;
-      const nc = c + 1 + (nd !== d ? 0.6 : 0); const k = key(nx, ny, nd);
-      if (nc < (dist.get(k) ?? INF)) { dist.set(k, nc); prev.set(k, [x, y, d]); pq.push([nc, nx, ny, nd]); }
+      const nc = c + 1 + (STEP_COST[ROWS[ny][nx]] || 0) + (nd !== d ? TURN_COST : 0);
+      const nk = key(nx, ny, nd);
+      if (nc < cost[nk]) { cost[nk] = nc; prev[nk] = k; push(nc, nk); }
     }
   }
   return null;
 }
 const dirOf = (a, b) => DIRS.findIndex(d => d[0] === b[0] - a[0] && d[1] === b[1] - a[1]);
+// 直線ごとに区切り、0.6m 未満の小さな寄り道は案内しない
 function segments(path) {
-  const segs = [];
+  let segs = [];
   for (let i = 1; i < path.length; i++) {
     const d = dirOf(path[i - 1], path[i]);
     if (segs.length && segs[segs.length - 1].d === d) segs[segs.length - 1].n++;
-    else segs.push({ d, n: 1, startIdx: i - 1 });
+    else segs.push({ d, n: 1 });
   }
+  const minN = Math.round(0.6 / CELL);
+  let changed = true;
+  while (changed && segs.length > 2) {
+    changed = false;
+    for (let i = 1; i < segs.length - 1; i++) {
+      if (segs[i].n < minN) {
+        const prev = segs[i - 1], next = segs[i + 1];
+        prev.n += segs[i].n;
+        segs.splice(i, 1);
+        if (prev.d === next.d) { prev.n += next.n; segs.splice(i, 1); }
+        changed = true; break;
+      }
+    }
+  }
+  if (segs.length > 1 && segs[0].n < 2) { segs[1].n += segs[0].n; segs.shift(); }
+  if (segs.length > 1 && segs[segs.length - 1].n < 2) { segs[segs.length - 2].n += segs[segs.length - 1].n; segs.pop(); }
+  let idx = 0;
+  segs.forEach(sg => { sg.startIdx = idx; idx += sg.n; });
   return segs;
 }
 function turnWord(d1, d2) { const diff = (d2 - d1 + 4) % 4; return diff === 1 ? '右' : diff === 3 ? '左' : diff === 2 ? '後ろ' : '直進'; }
-const meters = cells => Math.max(1, Math.round(cells * CELL_M));      // 読み上げ用
-const metersTxt = cells => (cells * CELL_M).toFixed(1) + 'm';          // 画面表示用
+const meters = cells => Math.max(1, Math.round(cells * CELL));
+const metersTxt = cells => (cells * CELL).toFixed(1) + 'm';
+// ルート上のドア（はじめて通るマスの番号）
+function doorsOnPath(path) {
+  const out = [];
+  let inDoor = false;
+  path.forEach((c, i) => {
+    const ch = ROWS[c[1]][c[0]];
+    const isDoor = ch === 'D' || ch === 'S';
+    if (isDoor && !inDoor) {
+      let best = null, bd = 1e9;
+      MAP.doors.forEach(d => { if (d.kind !== 'door' || !d.cell) return; const dd = Math.hypot(d.cell[0] - c[0], d.cell[1] - c[1]); if (dd < bd) { bd = dd; best = d; } });
+      if (best && bd < 8) out.push({ idx: i, door: best });
+    }
+    inDoor = isDoor;
+  });
+  return out;
+}
+function doorSpeech(d) {
+  const n = d.name.replace(/（[^）]*）|\([^)]*\)/g, '').replace(/\s*(ドア|両開き)$/, '').trim();
+  if (d.access === 'staff') return `この先、${n}です。関係者用のドアです。`;
+  return `この先、${n}${/扉$/.test(n) ? '' : 'のドア'}を通ります。`;
+}
 
 // ------------------------------------------------------------ 案内
 function setInstr(word, sub, icon) {
@@ -412,31 +497,23 @@ function stopNav() {
   st.nav = null; hush();
   if (N) N.keepScreenOn(false);
 }
-
 function startNav(dest, opts = {}) {
   if (st.nav) clearTimeout(st.nav.timer);
-  const from = st.pos ? st.pos.cell : OFFICE.start;
-  const pts = st.pos ? [from, dest.at] : [OFFICE.start, ...(dest.via || []), dest.at];
-  let path = [];
-  for (let j = 1; j < pts.length; j++) {
-    const part = route(pts[j - 1], pts[j]);
-    if (!part) { say('ルートが見つかりませんでした。'); return; }
-    path = path.length ? path.concat(part.slice(1)) : part;
-  }
+  const from = st.pos ? st.pos.cell : ENTRY;
+  const path = route(from, dest.cell);
+  if (!path) { say('ルートが見つかりませんでした。'); return; }
   show('nav');
   if (N) N.keepScreenOn(true);
-  if (path.length < 2) { arrive(dest); return; }
+  if (path.length < 3) { arrive(dest); return; }
   const segs = segments(path);
-  const nav = st.nav = { dest, path, segs, idx: 0, spoken: new Set(), off: 0, paused: false, sim: !st.pos, timer: null };
+  const nav = st.nav = { dest, path, segs, doors: doorsOnPath(path), idx: 0, spoken: new Set(), off: 0, paused: false, sim: !st.pos, timer: null };
   buildMap($('navMap'), { path, dest });
-  placeMe(path[0], segs[0].d);
+  placeMeCell(path[0], segs[0].d);
   $('pauseBtn').textContent = '一時停止';
   $('simBtn').setAttribute('aria-pressed', nav.sim);
   updateSrcChip();
   const total = path.length - 1;
   $('remain').textContent = `残り ${metersTxt(total)}`;
-
-  // 最初の一言：方角合わせ済みなら「右を向いて」など体の向き基準で伝える
   const first = segs[0];
   let lead = `${DNAME[first.d]}方向に`;
   if (st.heading != null && st.data.northOffset != null) {
@@ -446,113 +523,103 @@ function startNav(dest, opts = {}) {
     lead = w === '正面' ? '正面に' : `${w}を向いて、`;
   }
   setInstr('直進', `約${metersTxt(first.n)} まっすぐ`, '直進');
-  say(`${opts.reroute ? 'ルートを再計算しました。' : ''}${dest.name}まで、約${meters(total)}メートル。${lead}まっすぐ約${meters(first.n)}メートル進みます。`);
+  say(`${opts.reroute ? 'ルートを再計算しました。' : ''}${spoken(dest.name)}まで、約${meters(total)}メートル。${lead}まっすぐ約${meters(first.n)}メートル進みます。`);
   if (nav.sim) nav.timer = setTimeout(simTick, 4200);
 }
-
 function updateSrcChip() {
   const c = $('srcChip'); if (!st.nav) return;
   if (st.nav.sim) { c.textContent = 'デモ歩行'; c.className = 'chip warn'; }
   else if (st.pos) { c.textContent = `BLE 屋内測位（${st.pos.used.length}台）`; c.className = 'chip'; }
   else { c.textContent = 'BLE 受信待ち'; c.className = 'chip off'; }
 }
-
-function placeMe(cell, d) {
+function placeMeAt(p, d) {
   const g = $('navMap').querySelector('.me'); if (!g) return;
-  g.setAttribute('transform', `translate(${(cell[0] + .5) * C} ${(cell[1] + .5) * C}) rotate(${d * 90})`);
+  g.setAttribute('transform', `translate(${(p[0] * U).toFixed(1)} ${(p[1] * U).toFixed(1)}) rotate(${d * 90})`);
 }
-function placeMeAt(xm, ym, d) {
-  const g = $('navMap').querySelector('.me'); if (!g) return;
-  g.setAttribute('transform', `translate(${(xm / CELL_M * C).toFixed(1)} ${(ym / CELL_M * C).toFixed(1)}) rotate(${d * 90})`);
-}
+const placeMeCell = (c, d) => placeMeAt(cellCenter(c), d);
+const segIndexAt = i => { const segs = st.nav.segs; for (let k = 0; k < segs.length; k++) if (i > segs[k].startIdx && i <= segs[k].startIdx + segs[k].n) return k; return segs.length - 1; };
 
 // path[i] に着いたときの案内
 function eventAt(i) {
   const nav = st.nav, segs = nav.segs, last = nav.path.length - 1;
   if (i >= last) return { arrive: true };
-  const si = segs.findIndex(sg => i > sg.startIdx && i <= sg.startIdx + sg.n);
-  const sg = segs[si], next = segs[si + 1], toEnd = sg.startIdx + sg.n - i;
+  const si = segIndexAt(i), sg = segs[si], next = segs[si + 1];
+  const toEnd = sg.startIdx + sg.n - i, toEndM = toEnd * CELL;
   if (next && toEnd === 0) {
     const w = turnWord(sg.d, next.d);
     return { si, key: 'turn' + si, word: w, sub: `${w}へ曲がって、約${metersTxt(next.n)}`, icon: w, speech: `${w}に曲がります。その先、約${meters(next.n)}メートル直進です。` };
   }
-  if (next && toEnd <= 3 && sg.n >= 5) {
+  if (next && toEndM <= 2.0 && sg.n * CELL >= 3.0) {
     const w = turnWord(sg.d, next.d);
     return { si, key: 'pre' + si, word: w, sub: `${metersTxt(toEnd)}先で${w}へ`, icon: w, speech: `まもなく、${w}です。` };
   }
-  if (!next && toEnd <= 3) return { si, key: 'near', word: '直進', sub: `${metersTxt(toEnd)}先が目的地`, icon: '直進', speech: 'まもなく目的地です。' };
+  if (!next && toEndM <= 1.5) return { si, key: 'near', word: '直進', sub: `${metersTxt(toEnd)}先が目的地`, icon: '直進', speech: 'まもなく目的地です。' };
+  const dr = nav.doors.find(x => x.idx > i && (x.idx - i) * CELL <= 2.0);
+  if (dr) return { si, key: 'door' + dr.idx, word: '直進', sub: `この先 ${dr.door.name}`, icon: '直進', speech: doorSpeech(dr.door) };
   return { si, word: '直進', sub: `約${metersTxt(toEnd)} まっすぐ`, icon: '直進' };
 }
-
 // 進み具合を j まで進める。読み上げたら true
 function advance(j) {
   const nav = st.nav; if (!nav || j <= nav.idx) return false;
-  let shown = null, spoken = null;
+  j = Math.min(j, nav.path.length - 1);
+  let shown = null, spokenEv = null;
   for (let i = nav.idx + 1; i <= j; i++) {
     const ev = eventAt(i);
     if (ev.arrive) { nav.idx = i; arrive(nav.dest); return true; }
     shown = ev;
-    if (ev.speech && !nav.spoken.has(ev.key)) { nav.spoken.add(ev.key); spoken = ev; }
+    if (ev.speech && !nav.spoken.has(ev.key)) { nav.spoken.add(ev.key); spokenEv = ev; }
   }
   nav.idx = j;
-  const p = nav.path[j];
-  const sg = nav.segs[Math.max(0, (spoken || shown).si)];
-  if (nav.sim) placeMe(p, sg.d);
+  const sg = nav.segs[(spokenEv || shown).si];
+  if (nav.sim) placeMeCell(nav.path[j], sg.d);
   const walked = $('navMap').querySelector('.walked');
-  if (walked) walked.setAttribute('points', nav.path.slice(0, j + 1).map(q => `${(q[0] + .5) * C},${(q[1] + .5) * C}`).join(' '));
+  if (walked) walked.setAttribute('points', poly(nav.path.slice(0, j + 1).map(cellCenter)));
   $('remain').textContent = `残り ${metersTxt(nav.path.length - 1 - j)}`;
-  const ev = spoken || shown;
+  const ev = spokenEv || shown;
   setInstr(ev.word, ev.sub, ev.icon);
-  if (spoken) say(spoken.speech);
-  return !!spoken;
+  if (spokenEv) say(spokenEv.speech);
+  return !!spokenEv;
 }
-
 function simTick() {
   const nav = st.nav; if (!nav || !nav.sim) return;
   if (nav.paused) { nav.timer = setTimeout(simTick, 300); return; }
-  const spoke = advance(nav.idx + 1);
-  if (st.nav === nav) nav.timer = setTimeout(simTick, spoke ? 2100 : 700);
+  const spoke = advance(nav.idx + 3);   // 0.6m ずつ
+  if (st.nav === nav) nav.timer = setTimeout(simTick, spoke ? 2300 : 480);
 }
-
 // ビーコンで推定した現在地から進み具合を更新する
 function navRealUpdate() {
   const nav = st.nav; if (!nav || nav.sim || nav.paused) return;
   updateSrcChip();
   if (!st.pos) return;
-  const seg = nav.segs[Math.min(nav.segs.length - 1, Math.max(0, nav.segs.findIndex(sg => nav.idx >= sg.startIdx && nav.idx < sg.startIdx + sg.n)))];
-  placeMeAt(st.pos.x, st.pos.y, seg ? seg.d : 0);
-
-  // 目的地に置いたビーコンのすぐそば（約1m以内）なら到着
-  const [gx, gy] = nav.dest.at;
-  for (const b of st.beacons) {
-    const p = st.data.placements[b.key];
-    if (p && Math.abs(p.x - gx) <= 1 && Math.abs(p.y - gy) <= 1 && b.ageMs < 3000 && b.samples >= 2 && distanceOf(b) < 1.0) {
-      advance(nav.path.length - 1); return;
-    }
-  }
-  // ルート上でいちばん近い地点を探す（少しの後戻りは許容）
-  const [cx, cy] = st.pos.cell;
+  const pos = [st.pos.x, st.pos.y];
+  placeMeAt(pos, nav.segs[segIndexAt(Math.max(1, nav.idx))].d);
+  // 到着：目的地から約1.2m以内、または目的地そばのビーコンに約1m以内
+  const near = BEACONS.filter(b => dist(b.at, nav.dest.at) < 2.5).map(b => b.label);
+  const seen = seenByLabel();
+  const closeBeacon = near.some(l => { const h = seen.get(l); return h && h.b.samples >= 2 && h.d < 1.0; });
+  if (dist(pos, nav.dest.at) <= 1.2 || closeBeacon) { advance(nav.path.length - 1); return; }
+  // ルート上のいちばん近い地点（少しの後戻りは許容、先は 8m まで）
   let bj = nav.idx, bd = 1e9;
-  for (let j = Math.max(0, nav.idx - 2); j < nav.path.length; j++) {
-    const d = Math.hypot(nav.path[j][0] - cx, nav.path[j][1] - cy);
+  const hi = Math.min(nav.path.length - 1, nav.idx + 40);
+  for (let j = Math.max(0, nav.idx - 10); j <= hi; j++) {
+    const d = dist(cellCenter(nav.path[j]), pos);
     if (d < bd - 1e-6) { bd = d; bj = j; }
   }
-  if (bd <= 2.5) {
+  if (bd <= 1.6) {
     nav.off = 0;
     if (bj > nav.idx) advance(bj);
-  } else if (++nav.off >= 6) { // 約3秒続けて外れていたら引き直す
+  } else if (++nav.off >= 6) {   // 約3秒続けて外れていたら引き直す
     say('ルートから外れました。');
     startNav(nav.dest, { reroute: true });
   }
 }
-
 function arrive(dest) {
   const nav = st.nav;
   if (nav) clearTimeout(nav.timer);
   st.nav = null;
   if (N) N.keepScreenOn(false);
   setInstr('到着', dest.name, '直進');
-  say(`目的地、${dest.name}に到着しました。`);
+  say(`目的地、${spoken(dest.name)}に到着しました。`);
   setTimeout(() => {
     $('dark').hidden = true;
     show('done');
@@ -561,7 +628,6 @@ function arrive(dest) {
     $('futureText').textContent = dest.future || '';
   }, 1400);
 }
-
 $('pauseBtn').onclick = () => {
   const nav = st.nav; if (!nav) return;
   nav.paused = !nav.paused;
@@ -574,83 +640,41 @@ $('simBtn').onclick = () => {
   $('simBtn').setAttribute('aria-pressed', nav.sim);
   updateSrcChip();
   clearTimeout(nav.timer);
-  if (nav.sim) { placeMe(nav.path[nav.idx], 0); nav.timer = setTimeout(simTick, 500); }
+  if (nav.sim) { placeMeCell(nav.path[nav.idx], nav.segs[segIndexAt(Math.max(1, nav.idx))].d); nav.timer = setTimeout(simTick, 500); }
 };
 $('eyesBtn').onclick = () => { $('dark').hidden = false; };
 $('darkOff').onclick = () => { $('dark').hidden = true; };
 $('stopBtn').onclick = () => { stopNav(); $('dark').hidden = true; say('案内を終了しました。'); toListen(); };
-$('again').onclick = toListen;
+$('again').onclick = () => toListen();
 $('doneHome').onclick = () => show('home');
 
 // ------------------------------------------------------------ 図面タブ
-let placedSig = '';
+let listSig = '';
 function renderPlan(full) {
   const el = $('planMap');
-  if (full || !el.querySelector('svg')) buildMap(el, {});
+  if (full || !el.querySelector('svg')) buildMap(el, { allDests: true, small: true });
   else updateDyn(el);
-  $('planSize').textContent = `${(14 * CELL_M).toFixed(1)}m × ${(12 * CELL_M).toFixed(1)}m`;
+  $('planSize').textContent = `${(BX1 - BX0 - 0.8).toFixed(1)}m × ${(BY1 - BY0 - 0.8).toFixed(1)}m`;
   $('planPos').textContent = st.pos
-    ? `x ${st.pos.x.toFixed(1)}m, y ${st.pos.y.toFixed(1)}m（${placeName(st.pos.cell[0], st.pos.cell[1])}付近・誤差 約${st.pos.acc.toFixed(1)}m）`
-    : '—（配置済みビーコンを受信していません）';
-  $('planUsed').textContent = st.pos ? st.pos.used.map(u => `${u.p.label} ${u.d.toFixed(1)}m`).join(' / ') : '—';
-  $('placingBar').hidden = !st.placing;
-  if (st.placing) $('placingName').textContent = st.placing.label;
-
-  const seen = new Set(st.beacons.filter(b => b.ageMs < 5000).map(b => b.key));
-  const entries = Object.entries(st.data.placements).sort((a, b) => a[1].label.localeCompare(b[1].label));
-  const sig = entries.map(([k, p]) => k + p.x + p.y + seen.has(k)).join('|');
-  if (!full && sig === placedSig) return;
-  placedSig = sig;
-  $('placedList').innerHTML = entries.length ? entries.map(([k, p]) =>
-    `<div class="prow"><i class="lg ${seen.has(k) ? 'teal' : 'gray'}"></i><b>${esc(p.label)}</b><span class="grow">${esc(placeName(p.x, p.y))}（${p.x},${p.y}）・${esc(shortId(k))}</span><button class="iconbtn" data-del="${esc(k)}">外す</button></div>`).join('')
-    : '<p class="sub">まだありません。「ビーコン」タブで受信中の iPhone を選び、「図面に配置」を押してください。</p>';
-}
-$('placedList').addEventListener('click', e => {
-  const b = e.target.closest('[data-del]'); if (!b) return;
-  delete st.data.placements[b.dataset.del]; save(); estimate(); renderPlan(true);
-});
-$('planMap').addEventListener('click', e => {
-  if (!st.placing) return;
-  const svg = $('planMap').querySelector('svg'); if (!svg) return;
-  const pt = svg.createSVGPoint(); pt.x = e.clientX; pt.y = e.clientY;
-  const p = pt.matrixTransform(svg.getScreenCTM().inverse());
-  let cell = [Math.floor(p.x / C), Math.floor(p.y / C)];
-  if (!walkable(cell[0], cell[1])) cell = snapCell(p.x / C - .5, p.y / C - .5);
-  const old = st.data.placements[st.placing.key] || {};
-  st.data.placements[st.placing.key] = { ...old, x: cell[0], y: cell[1], label: st.placing.label };
-  save();
-  const label = st.placing.label;
-  st.placing = null;
-  estimate();
-  renderPlan(true);
-  say(`${label}を、${placeName(cell[0], cell[1])}に配置しました。`);
-});
-function cancelPlacing() { st.placing = null; renderPlan(true); }
-$('placingCancel').onclick = cancelPlacing;
-
-function nextLabel() {
-  const used = new Set(Object.values(st.data.placements).map(p => p.label));
-  for (let i = 1; ; i++) { const l = 'B-' + String(i).padStart(2, '0'); if (!used.has(l)) return l; }
+    ? `x ${st.pos.x.toFixed(1)}m, y ${st.pos.y.toFixed(1)}m（${placeName([st.pos.x, st.pos.y])}付近・誤差 約${st.pos.acc.toFixed(1)}m）`
+    : '—（図面のビーコンを受信していません）';
+  $('planUsed').textContent = st.pos ? st.pos.used.map(u => `${u.mb.label} ${u.d.toFixed(1)}m`).join(' / ') : '—';
+  const seen = seenByLabel();
+  const sig = BEACONS.map(b => { const h = seen.get(b.label); return b.label + (h ? Math.round(h.b.rssi) : 'x'); }).join('|');
+  if (!full && sig === listSig) return;
+  listSig = sig;
+  $('placedList').innerHTML = BEACONS.map(b => {
+    const h = seen.get(b.label);
+    return `<div class="prow"><i class="lg ${h ? 'teal' : 'gray'}"></i><b class="${h ? '' : 'off'}">${esc(b.label)}</b><span class="grow">${esc(placeName(b.at))}・Minor ${b.minor ?? '?'}</span><span class="rem">${h ? `${Math.round(h.b.rssi)}dBm 約${h.d.toFixed(1)}m` : '未受信'}</span></div>`;
+  }).join('');
 }
 
 // ------------------------------------------------------------ ビーコンタブ
-function shortId(key) {
-  const parts = key.split(':');
-  if (parts[0] === 'Eddystone') return `NS …${parts[1].slice(-4)} / ${parts[2].slice(-4)}`;
-  return `UUID …${parts[1].slice(-4)} / ${parts[2]}-${parts[3]}`;
-}
-function displayName(b) {
-  const p = st.data.placements[b.key];
-  if (p) return p.label;
-  if (b.type === 'Eddystone') return 'Eddystone ' + (b.instance || '').slice(-4);
-  return `Major ${b.major} / Minor ${b.minor}`;
-}
 const rows = new Map();
 function renderBeacons() {
   const list = $('beaconList');
   $('otherChip').textContent = `他のBLE機器 ${st.others}台`;
-  const s = st.status;
-  const warn = $('beaconWarn');
+  const s = st.status, warn = $('beaconWarn');
   let w = '';
   if (s && !s.permission) w = 'Bluetooth・位置情報の権限が許可されていません。ホームの「権限を許可する」を押してください。';
   else if (s && !s.bluetooth) w = 'Bluetooth がオフです。';
@@ -677,56 +701,53 @@ function renderBeacons() {
       el.innerHTML = `<div class="btop"><span class="name"></span><span class="btype"></span></div>
         <div class="bmeta"></div>
         <div class="bnums"><span><b class="r"></b> dBm</span><span class="rssi"><i></i></span><span>約<b class="d"></b>m</span></div>
-        <div class="bbtns"><button class="iconbtn" data-act="place">図面に配置</button><button class="iconbtn" data-act="cal">1mで補正</button></div>`;
+        <div class="bbtns"><button class="iconbtn" data-act="cal">1mで補正</button><button class="iconbtn" data-act="reset" hidden>補正を戻す</button></div>`;
       rows.set(b.key, el);
     }
     if (list.children[i] !== el) list.insertBefore(el, list.children[i] || null);
-    const p = st.data.placements[b.key];
-    el.classList.toggle('placed', !!p);
+    const mb = beaconOf(b);
+    const label = mb ? mb.label : null;
+    el.classList.toggle('placed', !!mb);
     el.classList.toggle('stale', b.ageMs > 3000);
-    el.querySelector('.name').textContent = displayName(b) + (p ? `（${placeName(p.x, p.y)}）` : '');
+    el.querySelector('.name').textContent = mb ? `${mb.label}（${placeName(mb.at)}）` : (b.type === 'Eddystone' ? 'Eddystone（未対応）' : `Minor ${b.minor}（図面に対応なし）`);
     el.querySelector('.btype').textContent = b.type;
+    const cal = label && typeof st.data.tx[label] === 'number';
     el.querySelector('.bmeta').textContent = b.type === 'Eddystone'
       ? `NS ${b.uuid} / ${b.instance}`
-      : `${b.uuid}  Major ${b.major} / Minor ${b.minor}  1m: ${p && typeof p.tx === 'number' ? p.tx + '（補正）' : b.tx} dBm`;
+      : `${b.uuid}  Major ${b.major} / Minor ${b.minor}  1m: ${cal ? st.data.tx[label] + '（補正）' : b.tx} dBm`;
     el.querySelector('.r').textContent = Math.round(b.rssi);
-    el.querySelector('.d').textContent = distanceOf(b).toFixed(1);
+    el.querySelector('.d').textContent = (label ? distanceOf(b, label) : Math.pow(10, (b.tx - b.rssi) / (10 * st.data.n))).toFixed(1);
     el.querySelector('.rssi i').style.width = Math.max(4, Math.min(100, (b.rssi + 100) * 1.6)) + '%';
-    el.querySelector('[data-act="place"]').textContent = p ? '配置を変更' : '図面に配置';
+    el.querySelector('[data-act="cal"]').hidden = !label;
+    el.querySelector('[data-act="reset"]').hidden = !cal;
   });
 }
 $('beaconList').addEventListener('click', e => {
   const btn = e.target.closest('button'); if (!btn) return;
-  const key = btn.closest('.bcard').dataset.key;
-  const b = st.beacons.find(x => x.key === key); if (!b) return;
-  if (btn.dataset.act === 'place') {
-    const p = st.data.placements[key];
-    st.placing = { key, label: p ? p.label : nextLabel() };
-    show('plan');
-  } else if (btn.dataset.act === 'cal') {
-    const p = st.data.placements[key];
-    if (!p) { say('先に図面に配置してください。'); return; }
-    p.tx = Math.round(b.rssi); save();
-    say(`${p.label}の1メートル地点の強さを、${p.tx}デシベルにしました。`);
-    renderBeacons();
+  const b = st.beacons.find(x => x.key === btn.closest('.bcard').dataset.key); if (!b) return;
+  const mb = beaconOf(b); if (!mb) return;
+  if (btn.dataset.act === 'cal') {
+    st.data.tx[mb.label] = Math.round(b.rssi); save();
+    say(`${mb.label}の1メートル地点の強さを、${st.data.tx[mb.label]}デシベルにしました。`);
+  } else if (btn.dataset.act === 'reset') {
+    delete st.data.tx[mb.label]; save();
   }
+  renderBeacons();
 });
 $('nRange').addEventListener('input', e => { st.data.n = Number(e.target.value); $('nVal').textContent = st.data.n.toFixed(1); save(); });
 
-// ------------------------------------------------------------ PC ブラウザ用の疑似データ
+// ------------------------------------------------------------ PC ブラウザ用の疑似データ（受付付近に立っている想定）
 function startMock() {
-  const fake = [
-    { minor: 1, base: -58 }, { minor: 2, base: -66 }, { minor: 3, base: -72 }, { minor: 4, base: -80 },
-  ];
   st.status = { permission: true, bluetooth: true, location: true, scanning: true, tts: true, error: '', model: 'PC ブラウザ（疑似データ）' };
+  const me = (DESTS.find(d => d.name === '受付') || DESTS[0]).at;
   let t = 0;
   setInterval(() => {
     t++;
-    const beacons = fake.map(f => ({
-      key: `iBeacon:E2C56DB5-DFFB-48D2-B060-D0F5A71096E0:1:${f.minor}`, type: 'iBeacon',
-      uuid: 'E2C56DB5-DFFB-48D2-B060-D0F5A71096E0', major: 1, minor: f.minor, tx: -59,
-      rssi: f.base + Math.sin(t / 5 + f.minor) * 3, rssiLast: f.base, samples: 6, ageMs: 200, count: t,
-    }));
+    const beacons = BEACONS.filter(b => b.minor != null).map(b => {
+      const d = Math.max(0.5, dist(b.at, me));
+      const rssi = -59 - 20 * Math.log10(d) + Math.sin(t / 4 + b.minor) * 2;
+      return { key: `iBeacon:E2C56DB5-DFFB-48D2-B060-D0F5A71096E0:1:${b.minor}`, type: 'iBeacon', uuid: 'E2C56DB5-DFFB-48D2-B060-D0F5A71096E0', major: 1, minor: b.minor, tx: -59, rssi, rssiLast: rssi, samples: 6, ageMs: 200, count: t };
+    }).filter(b => b.rssi > -85);
     window.__native('beacons', { scanning: true, others: 17, beacons });
   }, 500);
   window.__native('status', st.status);
@@ -735,10 +756,13 @@ function startMock() {
 // ------------------------------------------------------------ 起動
 load();
 show('home');
+if (MAP.warnings && MAP.warnings.length) console.warn('地図データの注意:', MAP.warnings);
 if (N) {
-  N.startScan(); // 初回は権限の確認ダイアログが出る
+  N.startScan();
   setInterval(() => { if (!st.scanning) N.refreshStatus(); }, 3000);
 } else {
   startMock();
 }
+// テスト用
+window.__mimi = { route, segments, matchDest, DESTS, ENTRY, st, startNav, doorsOnPath };
 })();

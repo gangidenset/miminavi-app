@@ -4,6 +4,7 @@ name: Build APK
 on:
   push:
     branches: [main]
+    paths-ignore: ['**.md']
   workflow_dispatch:
 
 permissions:
@@ -25,6 +26,10 @@ jobs:
           java-version: 21
 
       - uses: gradle/actions/setup-gradle@v4
+
+      # map/floor.drawio（draw.io の図面）からアプリ用の地図データを作る
+      - name: Convert floor map
+        run: python3 tools/drawio_to_map.py map/floor.drawio app/src/main/assets/map.js
 
       - name: Build debug APK
         run: |

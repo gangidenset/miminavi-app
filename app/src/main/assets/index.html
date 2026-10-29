@@ -23,7 +23,7 @@
     <div class="venues">
       <button class="venue" aria-pressed="true">
         <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="1"/><path d="M8 7h2M14 7h2M8 11h2M14 11h2M8 15h2M14 15h2M10 21v-3h4v3"/></svg>
-        <b>事業所</b><span>会議室・オフィスへ案内</span>
+        <b id="venueName">事業所</b><span id="venueDesc">会議室・受付・給湯室などへ案内</span>
       </button>
     </div>
     <div class="dl"><span id="dlname">簡易マップ：事業所</span><span>保存済み</span></div>
@@ -36,7 +36,7 @@
 
     <div class="card">
       <h3>図面上のビーコン</h3>
-      <p class="kpi"><b id="kPlaced">0</b><span>台を配置</span><b id="kSeen">0</b><span>台を受信中</span></p>
+      <p class="kpi"><b id="kPlaced">0</b><span>台を設置</span><b id="kSeen">0</b><span>台を受信中</span></p>
       <p class="sub" id="kPos">現在地：—</p>
     </div>
 
@@ -71,7 +71,7 @@
     <div class="transcript" id="transcript">行き先を話してください<small>マイクを押して話すか、下の例を押してください</small></div>
     <div class="samples" id="samples"></div>
     <div class="spacer"></div>
-    <form class="typed" id="typed"><input id="q" placeholder="文字で入力（例：会議室8）" autocomplete="off"><button>案内</button></form>
+    <form class="typed" id="typed"><input id="q" placeholder="文字で入力（例：受付、給湯室）" autocomplete="off"><button>案内</button></form>
     <button class="btn ghost" id="backHome">ホームに戻る</button>
   </section>
 
@@ -110,20 +110,16 @@
   <!-- ================= PLAN（図面） ================= -->
   <section class="view" id="v-plan" hidden>
     <div class="appbar"><div class="logo sm">事業所の図面</div><span class="chip" id="planSize"></span></div>
-    <div class="placing" id="placingBar" hidden>
-      <div><b id="placingName"></b><span>を置いた場所を図面上でタップ</span></div>
-      <button class="iconbtn" id="placingCancel">やめる</button>
-    </div>
-    <div class="map tall" id="planMap"></div>
+    <div class="map plan" id="planMap"></div>
     <dl class="kv"><dt>推定位置</dt><dd id="planPos">—</dd><dt>使用ビーコン</dt><dd id="planUsed">—</dd></dl>
     <div class="legend">
-      <span><i class="lg teal"></i>配置済み（受信中）</span>
-      <span><i class="lg gray"></i>配置済み（受信なし）</span>
-      <span><i class="lg dash"></i>おすすめ設置位置</span>
+      <span><i class="lg teal"></i>ビーコン（受信中）</span>
+      <span><i class="lg gray"></i>ビーコン（受信なし）</span>
+      <span><i class="lg pin"></i>目的地</span>
       <span><i class="lg coral"></i>現在地</span>
     </div>
     <div class="card">
-      <h3>配置済みビーコン</h3>
+      <h3>図面のビーコン（B-xx）<span class="sub">Minor 番号で自動対応</span></h3>
       <div id="placedList" class="plist"></div>
     </div>
   </section>
@@ -138,11 +134,11 @@
       <label class="slider">減衰係数 n <b id="nVal">2.0</b>
         <input type="range" id="nRange" min="1.6" max="3.6" step="0.1" value="2.0">
       </label>
-      <p class="sub">距離 = 10^((1m地点のRSSI − 受信RSSI) ÷ (10 × n))。障害物が多いほど n を大きくします。各ビーコンの「1mで補正」を押すと、その場の値を1m地点のRSSIとして記録します。</p>
+      <p class="sub">距離 = 10^((1m地点のRSSI − 受信RSSI) ÷ (10 × n))。障害物が多いほど n を大きくします。ビーコンから1m離れた所で「1mで補正」を押すと、その場の値を1m地点のRSSIとして記録します。</p>
     </div>
     <div class="card">
       <h3>iPhone（Beacon Simulator）の設定</h3>
-      <p class="sub">形式は iBeacon を選び、全台で同じ UUID、台ごとに異なる Minor（1, 2, 3 …）にすると見分けやすくなります。iPhone は画面をつけたまま、アプリを前面に表示しておいてください（画面を消すと送信が止まります）。</p>
+      <p class="sub">形式は iBeacon、全台で同じ UUID・Major にして、<b>Minor を図面の番号に合わせます</b>（B-01 の場所に置く iPhone は Minor 1、B-13 は Minor 13）。受信すると自動で図面の位置に対応します。iPhone は画面をつけたまま、アプリを前面に表示しておいてください（画面を消すと送信が止まります）。</p>
     </div>
   </section>
 
@@ -160,6 +156,7 @@
     <button data-tab="beacons" aria-pressed="false"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M8.5 15.5a5 5 0 0 1 0-7M15.5 8.5a5 5 0 0 1 0 7M5.6 18.4a9 9 0 0 1 0-12.8M18.4 5.6a9 9 0 0 1 0 12.8"/></svg>ビーコン</button>
   </nav>
 </div>
+<script src="map.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
