@@ -135,10 +135,10 @@
     <div id="beaconList" class="blist"><p class="sub">ビーコンを探しています…</p></div>
     <div class="card">
       <h3>距離の推定</h3>
-      <label class="slider">減衰係数 n <b id="nVal">2.0</b>
-        <input type="range" id="nRange" min="1.6" max="3.6" step="0.1" value="2.0">
+      <label class="slider">減衰係数 n <b id="nVal">4.0</b>
+        <input type="range" id="nRange" min="2.0" max="5.0" step="0.1" value="4.0">
       </label>
-      <p class="sub">距離 = 10^((1m地点のRSSI − 受信RSSI) ÷ (10 × n))。障害物が多いほど n を大きくします。ビーコンから1m離れた所で「1mで補正」を押すと、その場の値を1m地点のRSSIとして記録します。</p>
+      <p class="sub">距離 = 10^((1m地点のRSSI − 受信RSSI) ÷ (10 × n))。初期値は事務所での実測から求めた 1m地点 −45dBm・n 4.0。ビーコンから1m離れた所で「1mで補正」を押すと、そのビーコンの1m地点の値を実測値に置き換えます。位置は今いる部屋のビーコンだけで計算し、一番強いビーコンほど重く扱います（6dB 弱いと重み 1/10）。</p>
     </div>
     <div class="card">
       <h3>iPhone（Beacon Simulator）の設定</h3>

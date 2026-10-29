@@ -86,7 +86,7 @@ const st = {
   view: 'home', tab: 'guide', sound: true,
   status: null, beacons: [], others: 0, scanning: false,
   heading: null, pos: null, nav: null, room: null, roomCand: null, roomCandN: 0,
-  data: { n: 2.0, tx: {}, northOffset: null, assign: {} },
+  data: { v: 2, n: 4.0, tx: {}, northOffset: null, assign: {} },
   placing: null,
 };
 function load() {
@@ -94,7 +94,8 @@ function load() {
     const raw = N ? N.load() : localStorage.getItem('miminavi');
     if (raw) {
       const d = JSON.parse(raw);
-      if (typeof d.n === 'number') st.data.n = d.n;
+      // v2 から距離の式の初期値を実測データに合わせて変更。古い n（2.0）は引き継がない
+      if (d.v === 2 && typeof d.n === 'number') st.data.n = d.n;
       if (d.tx && typeof d.tx === 'object') st.data.tx = d.tx;
       if (typeof d.northOffset === 'number') st.data.northOffset = d.northOffset;
       if (d.assign && typeof d.assign === 'object') st.data.assign = d.assign;
@@ -195,9 +196,14 @@ function nextCustomLabel() {
   const used = new Set(Object.values(st.data.assign).map(a => a.label));
   for (let i = 1; ; i++) { const l = 'P-' + String(i).padStart(2, '0'); if (!used.has(l)) return l; }
 }
+// 距離の式：d = 10^((A − RSSI) ÷ (10 × n))
+//   A = 1m 地点の強さ。「1mで補正」した値、なければ実測データから求めた −45dBm
+//   （iPhone が送ってくる値 −59 は実測と合わなかったため使わない）
+//   n = 減衰係数。実測データへの当てはめで 4.0（ビーコンタブで調整可）
+const DEFAULT_A = -45;
+const txOf = label => typeof st.data.tx[label] === 'number' ? st.data.tx[label] : DEFAULT_A;
 function distanceOf(b, label) {
-  const tx = typeof st.data.tx[label] === 'number' ? st.data.tx[label] : b.tx;
-  return Math.min(30, Math.max(0.1, Math.pow(10, (tx - b.rssi) / (10 * st.data.n))));
+  return Math.min(30, Math.max(0.1, Math.pow(10, (txOf(label) - b.rssi) / (10 * st.data.n))));
 }
 // 受信中で図面に対応するもの（同じ Minor が複数あれば強い方）
 function seenByLabel() {
@@ -211,7 +217,7 @@ function seenByLabel() {
   return m;
 }
 // 1m地点の強さで補正した電波の強さ（大きいほど近い）
-const strength = u => u.b.rssi - (typeof st.data.tx[u.mb.label] === 'number' ? st.data.tx[u.mb.label] : u.b.tx);
+const strength = u => u.b.rssi - txOf(u.mb.label);
 const ROOM_SWITCH_DB = 3;     // 別の部屋に切り替える差（dB）
 const ROOM_SWITCH_COUNT = 2;  // 何回続いたら切り替えるか（0.5秒ごと）
 function decideRoom(all) {
@@ -231,17 +237,24 @@ function decideRoom(all) {
     else { st.roomCand = top.r.name; st.roomCandN = 1; }
   } else st.roomCand = null;
 }
+const PULL_DB = 6;   // 一番強いビーコンより 6dB 弱いと重みは 1/10（12dB で 1/100）
 function estimate() {
-  const all = [...seenByLabel().values()].sort((a, c) => a.d - c.d);
-  const used = all.slice(0, 4);
-  if (!used.length) { st.pos = null; st.room = null; return; }
+  const all = [...seenByLabel().values()].sort((a, c) => strength(c) - strength(a));
+  if (!all.length) { st.pos = null; st.room = null; return; }
   const prevRoom = st.room;
-  decideRoom(all);
+  decideRoom(all);   // 部屋の判定は全部のビーコンで（壁越しも含めて比べる）
+  // 位置の計算は今いる部屋のビーコンだけ（壁越しのビーコンに引っ張られない）。部屋にビーコンがなければ全部
+  const inRoom = st.room ? all.filter(u => roomAt(u.mb.at) === st.room) : [];
+  const used = (inRoom.length ? inRoom : all).slice(0, 4);
+  // 一番強いビーコンに強く引っ張られる重み：w = 10^((強さ − 一番強い強さ) ÷ 6)
+  const top = strength(used[0]);
   let sx = 0, sy = 0, sw = 0;
   used.forEach(u => {
-    const w = 1 / Math.pow(Math.max(u.d, 0.3), 2);
+    const w = Math.pow(10, (strength(u) - top) / PULL_DB);
+    u.w = w;
     sx += w * u.mb.at[0]; sy += w * u.mb.at[1]; sw += w;
   });
+  used.forEach(u => { u.w /= sw; });
   let x = sx / sw, y = sy / sw;
   // 今いる部屋の外に出たら、部屋の中のいちばん近い場所に寄せる（壁の向こうに推定しない）
   if (st.room && !inPoly([x, y], st.room.poly)) {
@@ -251,7 +264,7 @@ function estimate() {
   // 前回となめらかにつなぐ（部屋が変わったときはそのまま移る）
   if (st.pos && prevRoom === st.room) { x = st.pos.x + 0.4 * (x - st.pos.x); y = st.pos.y + 0.4 * (y - st.pos.y); }
   const cell = nearestFree([x, y]);
-  st.pos = { x, y, acc: used[0].d, used, all, cell, room: st.room };
+  st.pos = { x, y, acc: used[0].d, used, all, cell, room: st.room, roomOnly: inRoom.length > 0 };
 }
 // 目的地に着いたか：同じ部屋にいて、目的地に近い（または目的地そばのビーコンがいちばん強い）
 function atDest(dest) {
@@ -749,7 +762,7 @@ function renderPlan(full) {
   $('planPos').textContent = st.pos
     ? `x ${st.pos.x.toFixed(1)}m, y ${st.pos.y.toFixed(1)}m（${placeName([st.pos.x, st.pos.y])}付近・誤差 約${st.pos.acc.toFixed(1)}m）${st.room ? `／部屋：${roomName(st.room.name)}` : ''}`
     : '—（図面のビーコンを受信していません）';
-  $('planUsed').textContent = st.pos ? st.pos.used.map(u => `${u.mb.label} ${u.d.toFixed(1)}m`).join(' / ') : '—';
+  $('planUsed').textContent = st.pos ? st.pos.used.map(u => `${u.mb.label} ${u.d.toFixed(1)}m（重み${Math.round(u.w * 100)}%）`).join(' / ') + (st.pos.roomOnly ? '' : '（部屋にビーコンがないため全体で計算）') : '—';
   const seen = seenByLabel();
   $('placingBar').hidden = !st.placing;
   if (st.placing) $('placingName').textContent = st.placing.label;
@@ -844,9 +857,9 @@ function renderBeacons() {
     const cal = label && typeof st.data.tx[label] === 'number';
     el.querySelector('.bmeta').textContent = b.type === 'Eddystone'
       ? `NS ${b.uuid} / ${b.instance}`
-      : `${b.uuid}  Major ${b.major} / Minor ${b.minor}  1m: ${cal ? st.data.tx[label] + '（補正）' : b.tx} dBm`;
+      : `${b.uuid}  Major ${b.major} / Minor ${b.minor}  1m: ${cal ? st.data.tx[label] + '（補正）' : DEFAULT_A + '（標準）'} dBm`;
     el.querySelector('.r').textContent = Math.round(b.rssi);
-    el.querySelector('.d').textContent = (label ? distanceOf(b, label) : Math.pow(10, (b.tx - b.rssi) / (10 * st.data.n))).toFixed(1);
+    el.querySelector('.d').textContent = (label ? distanceOf(b, label) : Math.pow(10, (DEFAULT_A - b.rssi) / (10 * st.data.n))).toFixed(1);
     el.querySelector('.rssi i').style.width = Math.max(4, Math.min(100, (b.rssi + 100) * 1.6)) + '%';
     el.querySelector('[data-act="cal"]').hidden = !label;
     el.querySelector('[data-act="reset"]').hidden = !cal;
@@ -895,9 +908,9 @@ function startMock() {
     t++;
     const beacons = BEACONS.filter(b => b.minor != null).map(b => {
       const d = Math.max(0.5, dist(b.at, me));
-      const rssi = -59 - 20 * Math.log10(d) + Math.sin(t / 4 + b.minor) * 2;
+      const rssi = -45 - 40 * Math.log10(d) + Math.sin(t / 4 + b.minor) * 2;
       return { key: `iBeacon:E2C56DB5-DFFB-48D2-B060-D0F5A71096E0:1:${b.minor}`, type: 'iBeacon', uuid: 'E2C56DB5-DFFB-48D2-B060-D0F5A71096E0', major: 1, minor: b.minor, tx: -59, rssi, rssiLast: rssi, samples: 6, ageMs: 200, count: t };
-    }).filter(b => b.rssi > -85);
+    }).filter(b => b.rssi > -95);
     window.__native('beacons', { scanning: true, others: 17, beacons });
   }, 500);
   window.__native('status', st.status);
