@@ -285,7 +285,8 @@ function estimate() {
   if (st.pos && prevRoom === st.room) { x = st.pos.raw[0] + 0.4 * (x - st.pos.raw[0]); y = st.pos.raw[1] + 0.4 * (y - st.pos.raw[1]); }
   const raw = [x, y];
   // 線の上での位置合わせ（案内中はそのルート、そうでなければ赤いライン）
-  // 各ビーコンまでの「線に沿った距離」が推定距離 d にいちばん合う地点を選ぶ。ビーコン2台の外側にいても求められる
+  // 線の上の各地点から各ビーコンまでの直線距離（電波は壁を通ってまっすぐ届く）が、推定距離 d にいちばん合う地点を選ぶ。
+  // ビーコン2台の外側にいても求められる
   let cell = null, pathIdx = null;
   const prevPos = st.pos ? [st.pos.x, st.pos.y] : null;
   if (st.nav && !st.nav.sim) {
@@ -309,46 +310,30 @@ function fitCost(dists, us, here, prevPos) {
   return c;
 }
 function fitOnPath(path, us, prevPos) {
-  const proj = us.map(u => { let bi = 0, bd = 1e9; path.forEach((c, i) => { const d = dist(cellCenter(c), u.mb.at); if (d < bd) { bd = d; bi = i; } }); return { i: bi, off: bd }; });
-  let best = 0, bc = Infinity;
-  for (let j = 0; j < path.length; j++) {
-    const here = cellCenter(path[j]);
-    const c = fitCost(proj.map(p => Math.hypot((j - p.i) * CELL, p.off)), us, here, prevPos);
-    if (c < bc) { bc = c; best = j; }
-  }
+  const costs = path.map(c => { const here = cellCenter(c); return fitCost(us.map(u => dist(here, u.mb.at)), us, here, prevPos); });
+  let best = 0;
+  costs.forEach((c, j) => { if (c < costs[best]) best = j; });
+  // ビーコンのそばを通り過ぎると手前と奥で同じくらい当てはまる。ほぼ同点なら進行方向の先（3m 以内）を選ぶ
+  const tol = costs[best] * 0.25 + 0.05;
+  for (let j = Math.min(path.length - 1, best + 15); j > best; j--) if (costs[j] <= costs[best] + tol) return j;
   return best;
 }
-// 赤いラインの上を、各ビーコンからの距離（ラインに沿って測る）で探す
-const laneDistCache = new Map();
-function laneDistances(mb) {
-  const key = mb.label + ':' + mb.at.join(',');
-  if (laneDistCache.has(key)) return laneDistCache.get(key);
-  const s0 = nearestLaneCell(mb.at, null);
-  const off = dist(cellCenter(s0), mb.at);
-  const dmap = new Map([[s0[1] * GW + s0[0], 0]]);
-  const q = [s0];
-  while (q.length) {
-    const [x, y] = q.shift(), d0 = dmap.get(y * GW + x);
-    for (const [dx, dy] of DIRS) {
-      const nx = x + dx, ny = y + dy, k = ny * GW + nx;
-      if (nx >= 0 && ny >= 0 && nx < GW && ny < GH && isLane(nx, ny) && !dmap.has(k)) { dmap.set(k, d0 + CELL); q.push([nx, ny]); }
-    }
-  }
-  const r = { dmap, off };
-  laneDistCache.set(key, r);
-  return r;
-}
+// 赤いラインの上で探す
 function fitOnLanes(us, prevPos) {
   if (!us.length) return null;
-  const tabs = us.map(u => laneDistances(u.mb));
+  const cells = allLaneCells();
   let best = null, bc = Infinity;
-  for (const [k] of tabs[0].dmap) {
-    const x = k % GW, y = (k - x) / GW, here = cellCenter([x, y]);
-    const ds = tabs.map(t => { const d = t.dmap.get(k); return d == null ? 99 : Math.hypot(d, t.off); });
-    const c = fitCost(ds, us, here, prevPos);
-    if (c < bc) { bc = c; best = [x, y]; }
+  for (const cell of cells) {
+    const here = cellCenter(cell);
+    const c = fitCost(us.map(u => dist(here, u.mb.at)), us, here, prevPos);
+    if (c < bc) { bc = c; best = cell; }
   }
   return best;
+}
+let laneCellsAll = null;
+function allLaneCells() {
+  if (!laneCellsAll) { laneCellsAll = []; for (let y = 0; y < GH; y++) for (let x = 0; x < GW; x++) if (isLane(x, y)) laneCellsAll.push([x, y]); }
+  return laneCellsAll;
 }
 function nearestOnPath(path, p) {
   let best = null, bd = 1e9;
@@ -379,7 +364,8 @@ function atDest(dest) {
   if (dist([st.pos.x, st.pos.y], dest.at) <= 1.2) return true;
   const top = st.pos.all[0];
   if (!top || top.b.samples < 2) return false;
-  const nearDest = dist(top.mb.at, dest.at) < 2.5 && (!destRoom || roomAt(top.mb.at) === destRoom);
+  // 目的地の部屋にビーコンがない場合は、部屋の外（入口付近など）のビーコンでも判定してよい
+  const nearDest = dist(top.mb.at, dest.at) < 2.5 && (!destRoom || !roomHasBeacon || roomAt(top.mb.at) === destRoom);
   const lead = st.pos.all[1] ? strength(top) - strength(st.pos.all[1]) : 99;
   return nearDest && top.d < 1.2 && lead >= 2;
 }
