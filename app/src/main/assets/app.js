@@ -270,83 +270,113 @@ function decideRoom(all) {
     else { st.roomCand = top.r.name; st.roomCandN = 1; }
   } else st.roomCand = null;
 }
-const PULL_DB = 6;   // 一番強いビーコンより 6dB 弱いと重みは 1/10（12dB で 1/100）
+// ------------------------------------------------------------ 測位：受信台数で方式を切り替える
+//  1台    … 1点測位：ビーコンを中心に半径 d の円。円の上で、前回の位置の方向にある点
+//  2台    … 2点測位：2つの円の交点。交点が2つあれば、前回の位置・案内ルートに近い方。交わらなければ2台を結ぶ線の上
+//  3台以上 … 近い3台で3点測位：3つの円の式を引き算した連立方程式を解く。3台が一直線に近いときは最小二乗で探す
+//  d は各ビーコンまでの推定距離（d = 10^((A − RSSI) ÷ (10 × n))）
 function estimate() {
-  const all = [...seenByLabel().values()].sort((a, c) => strength(c) - strength(a));
+  const all = [...seenByLabel().values()].sort((a, c) => a.d - c.d);
   if (!all.length) { st.pos = null; st.room = null; return; }
   const prevRoom = st.room;
-  decideRoom(all);   // 部屋の判定は全部のビーコンで（壁越しも含めて比べる）
-  // 位置の計算は今いる部屋のビーコンだけ（壁越しのビーコンに引っ張られない）。部屋にビーコンがなければ全部
-  const inRoom = st.room ? all.filter(u => roomAt(u.mb.at) === st.room) : [];
-  const used = (inRoom.length ? inRoom : all).slice(0, 4);
-  // 一番強いビーコンに強く引っ張られる重み：w = 10^((強さ − 一番強い強さ) ÷ 6)
-  const top = strength(used[0]);
-  let sx = 0, sy = 0, sw = 0;
-  used.forEach(u => {
-    const w = Math.pow(10, (strength(u) - top) / PULL_DB);
-    u.w = w;
-    sx += w * u.mb.at[0]; sy += w * u.mb.at[1]; sw += w;
-  });
-  used.forEach(u => { u.w /= sw; });
-  let x = sx / sw, y = sy / sw;
-  // 今いる部屋の外に出たら、部屋の中のいちばん近い場所に寄せる（壁の向こうに推定しない）
-  if (st.room && !inPoly([x, y], st.room.poly)) {
-    const c = nearestCellInRoom(st.room, [x, y]);
-    if (c) [x, y] = cellCenter(c);
-  }
+  decideRoom(all);   // 今いる部屋（到着判定に使う）
+  const used = all.slice(0, 3);
+  const prev = st.pos ? st.pos.raw : null;
+  let p, method;
+  if (used.length === 1) { p = onePoint(used[0], prev); method = '1点測位'; }
+  else if (used.length === 2) { p = twoPoint(used[0], used[1], prev); method = '2点測位'; }
+  else { const r = threePoint(used, prev); p = r.p; method = r.ls ? '3点測位（最小二乗）' : '3点測位'; }
   // 前回となめらかにつなぐ（部屋が変わったときはそのまま移る）
-  if (st.pos && prevRoom === st.room) { x = st.pos.raw[0] + 0.4 * (x - st.pos.raw[0]); y = st.pos.raw[1] + 0.4 * (y - st.pos.raw[1]); }
-  const raw = [x, y];
-  // 線の上での位置合わせ（案内中はそのルート、そうでなければ赤いライン）
-  // 線の上の各地点から各ビーコンまでの直線距離（電波は壁を通ってまっすぐ届く）が、推定距離 d にいちばん合う地点を選ぶ。
-  // ビーコン2台の外側にいても求められる
+  if (prev && prevRoom === st.room) p = [prev[0] + 0.5 * (p[0] - prev[0]), prev[1] + 0.5 * (p[1] - prev[1])];
+  const raw = p;
+  // 表示する位置は線の上に寄せる（案内中はそのルート、そうでなければ赤いライン）
   let cell = null, pathIdx = null;
-  const prevPos = st.pos ? [st.pos.x, st.pos.y] : null;
   if (st.nav && !st.nav.sim) {
-    const path = st.nav.path;
-    pathIdx = fitOnPath(path, all.slice(0, 4), prevPos);
-    if (st.pos && st.pos.pathIdx != null && st.pos.path === path) pathIdx = Math.round(st.pos.pathIdx + 0.5 * (pathIdx - st.pos.pathIdx));
-    cell = path[pathIdx];
+    pathIdx = nearestIdxOnPath(st.nav.path, raw);
+    cell = st.nav.path[pathIdx];
   } else if (LANES) {
-    cell = fitOnLanes(all.slice(0, 4), prevPos) || nearestLaneCell(raw, st.room);
+    cell = nearestLaneCell(raw, null);
   }
   if (!cell) cell = nearestFree(raw);
   const [px, py] = (st.nav && !st.nav.sim) || LANES ? cellCenter(cell) : raw;
-  st.pos = { x: px, y: py, raw, acc: used[0].d, used, all, cell, room: st.room, roomOnly: inRoom.length > 0,
+  st.pos = { x: px, y: py, raw, acc: used[0].d, used, all, cell, room: st.room, method,
              pathIdx, path: st.nav && !st.nav.sim ? st.nav.path : null };
 }
-// 当てはまりの悪さ：Σ 重み ×（線に沿った距離 − 推定距離）²。近いビーコンほど信頼できるので重みは 1/d²
-function fitCost(dists, us, here, prevPos) {
-  let c = 0;
-  us.forEach((u, k) => { const w = 1 / Math.pow(Math.max(u.d, 0.5), 2); c += w * Math.pow(dists[k] - u.d, 2); });
-  if (prevPos) c += 0.05 * Math.pow(dist(here, prevPos), 2);   // 前回から急に飛ばない
-  return c;
+// 1点測位
+function onePoint(u, prev) {
+  const b = u.mb.at;
+  let dir = null;
+  if (prev && dist(prev, b) > 0.05) dir = prev;                       // 前回の位置の方向
+  else if (LANES) { const c = nearestLaneCell(b, null); if (c && dist(cellCenter(c), b) > 0.05) dir = cellCenter(c); }   // 初回は案内ルートの方向
+  if (!dir) return b.slice();
+  const L = dist(dir, b);
+  return [b[0] + (dir[0] - b[0]) / L * u.d, b[1] + (dir[1] - b[1]) / L * u.d];
 }
-function fitOnPath(path, us, prevPos) {
-  const costs = path.map(c => { const here = cellCenter(c); return fitCost(us.map(u => dist(here, u.mb.at)), us, here, prevPos); });
-  let best = 0;
-  costs.forEach((c, j) => { if (c < costs[best]) best = j; });
-  // ビーコンのそばを通り過ぎると手前と奥で同じくらい当てはまる。ほぼ同点なら進行方向の先（3m 以内）を選ぶ
-  const tol = costs[best] * 0.25 + 0.05;
-  for (let j = Math.min(path.length - 1, best + 15); j > best; j--) if (costs[j] <= costs[best] + tol) return j;
-  return best;
-}
-// 赤いラインの上で探す
-function fitOnLanes(us, prevPos) {
-  if (!us.length) return null;
-  const cells = allLaneCells();
-  let best = null, bc = Infinity;
-  for (const cell of cells) {
-    const here = cellCenter(cell);
-    const c = fitCost(us.map(u => dist(here, u.mb.at)), us, here, prevPos);
-    if (c < bc) { bc = c; best = cell; }
+// 2点測位
+function twoPoint(u1, u2, prev) {
+  const [x1, y1] = u1.mb.at, [x2, y2] = u2.mb.at, r1 = u1.d, r2 = u2.d;
+  const D = Math.hypot(x2 - x1, y2 - y1);
+  if (D < 0.05) return onePoint(u1, prev);
+  const ex = (x2 - x1) / D, ey = (y2 - y1) / D;
+  if (r1 + r2 <= D) {                       // 離れていて交わらない：2台の間を d1 : d2 に分ける点
+    const t = r1 / (r1 + r2) * D;
+    return [x1 + ex * t, y1 + ey * t];
   }
+  if (Math.abs(r1 - r2) >= D) {             // 一方の円がもう一方を含む：2台を結ぶ線の外側
+    if (r1 > r2) { const s = (r1 + D + r2) / 2; return [x1 + ex * s, y1 + ey * s]; }
+    const s = (r2 + D + r1) / 2; return [x2 - ex * s, y2 - ey * s];
+  }
+  const a = (r1 * r1 - r2 * r2 + D * D) / (2 * D);          // 交点：P1 から a 進んで、垂直に ±h
+  const h = Math.sqrt(Math.max(0, r1 * r1 - a * a));
+  const bx = x1 + ex * a, by = y1 + ey * a;
+  const cands = [[bx - ey * h, by + ex * h], [bx + ey * h, by - ex * h]];
+  return pickCandidate(cands, prev);
+}
+// 交点が2つあるときの選び方：建物の中・案内ルートに近い・前回の位置に近い
+function pickCandidate(cands, prev) {
+  let best = cands[0], bs = Infinity;
+  cands.forEach(c => {
+    const f = nearestFree(c);
+    let sc = dist(cellCenter(f), c) > 0.5 ? 5 : 0;
+    if (LANES) { const l = nearestLaneCell(c, null); if (l) sc += dist(cellCenter(l), c); }
+    if (prev) sc += dist(c, prev);
+    if (sc < bs) { bs = sc; best = c; }
+  });
   return best;
 }
-let laneCellsAll = null;
-function allLaneCells() {
-  if (!laneCellsAll) { laneCellsAll = []; for (let y = 0; y < GH; y++) for (let x = 0; x < GW; x++) if (isLane(x, y)) laneCellsAll.push([x, y]); }
-  return laneCellsAll;
+// 3点測位
+function threePoint(us, prev) {
+  const [[x0, y0], [x1, y1], [x2, y2]] = us.map(u => u.mb.at);
+  const [r0, r1, r2] = us.map(u => u.d);
+  // (x−xi)² + (y−yi)² = ri² を、1台目の式から引くと x, y の1次式になる
+  const a11 = 2 * (x1 - x0), a12 = 2 * (y1 - y0), b1 = r0 * r0 - r1 * r1 + x1 * x1 - x0 * x0 + y1 * y1 - y0 * y0;
+  const a21 = 2 * (x2 - x0), a22 = 2 * (y2 - y0), b2 = r0 * r0 - r2 * r2 + x2 * x2 - x0 * x0 + y2 * y2 - y0 * y0;
+  const det = a11 * a22 - a12 * a21;
+  // 3台が一直線に近い（三角形がつぶれている）と解けない：三角形の面積と一番長い辺で判定
+  const side = Math.max(Math.hypot(x1 - x0, y1 - y0), Math.hypot(x2 - x0, y2 - y0), Math.hypot(x2 - x1, y2 - y1));
+  if (Math.abs(det) / 8 > 0.15 * side * side) {
+    const p = [(b1 * a22 - a12 * b2) / det, (a11 * b2 - b1 * a21) / det];
+    if (dist(cellCenter(nearestFree(p)), p) < 1.0) return { p, ls: false };
+  }
+  return { p: leastSquares(us, prev), ls: true };
+}
+// 最小二乗：歩ける場所のマスのうち、Σ ((ビーコンまでの距離 − d) ÷ d)² がいちばん小さい所
+function leastSquares(us, prev) {
+  let best = null, bc = Infinity;
+  for (let y = 0; y < GH; y++) for (let x = 0; x < GW; x++) {
+    if (!walkable(x, y)) continue;
+    const c = cellCenter([x, y]);
+    let cost = 0;
+    us.forEach(u => { cost += Math.pow((dist(c, u.mb.at) - u.d) / Math.max(u.d, 0.5), 2); });
+    if (prev) cost += 0.02 * Math.pow(dist(c, prev), 2);
+    if (cost < bc) { bc = cost; best = c; }
+  }
+  return best || us[0].mb.at.slice();
+}
+function nearestIdxOnPath(path, p) {
+  let bi = 0, bd = 1e9;
+  path.forEach((c, i) => { const d = dist(cellCenter(c), p); if (d < bd) { bd = d; bi = i; } });
+  return bi;
 }
 function nearestOnPath(path, p) {
   let best = null, bd = 1e9;
@@ -836,6 +866,7 @@ function arrive(dest) {
   setInstr('到着', dest.name, '直進');
   say(`目的地、${spoken(dest.name)}に到着しました。`);
   setTimeout(() => {
+    if (st.nav) return;   // その間に次の案内が始まっていたら切り替えない
     $('dark').hidden = true;
     show('done');
     $('doneTitle').textContent = dest.name;
@@ -873,7 +904,7 @@ function renderPlan(full) {
   $('planPos').textContent = st.pos
     ? `x ${st.pos.x.toFixed(1)}m, y ${st.pos.y.toFixed(1)}m（${placeName([st.pos.x, st.pos.y])}付近・誤差 約${st.pos.acc.toFixed(1)}m）${st.room ? `／部屋：${roomName(st.room.name)}` : ''}`
     : '—（図面のビーコンを受信していません）';
-  $('planUsed').textContent = st.pos ? st.pos.used.map(u => `${u.mb.label} ${u.d.toFixed(1)}m（重み${Math.round(u.w * 100)}%）`).join(' / ') + (st.pos.roomOnly ? '' : '（部屋にビーコンがないため全体で計算）') : '—';
+  $('planUsed').textContent = st.pos ? `${st.pos.method}：` + st.pos.used.map(u => `${u.mb.label} ${u.d.toFixed(1)}m`).join(' / ') : '—';
   const seen = seenByLabel();
   $('placingBar').hidden = !st.placing;
   if (st.placing) $('placingName').textContent = st.placing.label;
