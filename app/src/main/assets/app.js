@@ -269,13 +269,71 @@ function estimate() {
   // 前回となめらかにつなぐ（部屋が変わったときはそのまま移る）
   if (st.pos && prevRoom === st.room) { x = st.pos.raw[0] + 0.4 * (x - st.pos.raw[0]); y = st.pos.raw[1] + 0.4 * (y - st.pos.raw[1]); }
   const raw = [x, y];
-  // 案内ルートの上に寄せる（案内中はそのルート、そうでなければ赤いライン）
-  let cell = null;
-  if (st.nav && !st.nav.sim) cell = nearestOnPath(st.nav.path, raw);
-  else if (LANES) cell = nearestLaneCell(raw, st.room);
+  // 線の上での位置合わせ（案内中はそのルート、そうでなければ赤いライン）
+  // 各ビーコンまでの「線に沿った距離」が推定距離 d にいちばん合う地点を選ぶ。ビーコン2台の外側にいても求められる
+  let cell = null, pathIdx = null;
+  const prevPos = st.pos ? [st.pos.x, st.pos.y] : null;
+  if (st.nav && !st.nav.sim) {
+    const path = st.nav.path;
+    pathIdx = fitOnPath(path, all.slice(0, 4), prevPos);
+    if (st.pos && st.pos.pathIdx != null && st.pos.path === path) pathIdx = Math.round(st.pos.pathIdx + 0.5 * (pathIdx - st.pos.pathIdx));
+    cell = path[pathIdx];
+  } else if (LANES) {
+    cell = fitOnLanes(all.slice(0, 4), prevPos) || nearestLaneCell(raw, st.room);
+  }
   if (!cell) cell = nearestFree(raw);
   const [px, py] = (st.nav && !st.nav.sim) || LANES ? cellCenter(cell) : raw;
-  st.pos = { x: px, y: py, raw, acc: used[0].d, used, all, cell, room: st.room, roomOnly: inRoom.length > 0 };
+  st.pos = { x: px, y: py, raw, acc: used[0].d, used, all, cell, room: st.room, roomOnly: inRoom.length > 0,
+             pathIdx, path: st.nav && !st.nav.sim ? st.nav.path : null };
+}
+// 当てはまりの悪さ：Σ 重み ×（線に沿った距離 − 推定距離）²。近いビーコンほど信頼できるので重みは 1/d²
+function fitCost(dists, us, here, prevPos) {
+  let c = 0;
+  us.forEach((u, k) => { const w = 1 / Math.pow(Math.max(u.d, 0.5), 2); c += w * Math.pow(dists[k] - u.d, 2); });
+  if (prevPos) c += 0.05 * Math.pow(dist(here, prevPos), 2);   // 前回から急に飛ばない
+  return c;
+}
+function fitOnPath(path, us, prevPos) {
+  const proj = us.map(u => { let bi = 0, bd = 1e9; path.forEach((c, i) => { const d = dist(cellCenter(c), u.mb.at); if (d < bd) { bd = d; bi = i; } }); return { i: bi, off: bd }; });
+  let best = 0, bc = Infinity;
+  for (let j = 0; j < path.length; j++) {
+    const here = cellCenter(path[j]);
+    const c = fitCost(proj.map(p => Math.hypot((j - p.i) * CELL, p.off)), us, here, prevPos);
+    if (c < bc) { bc = c; best = j; }
+  }
+  return best;
+}
+// 赤いラインの上を、各ビーコンからの距離（ラインに沿って測る）で探す
+const laneDistCache = new Map();
+function laneDistances(mb) {
+  const key = mb.label + ':' + mb.at.join(',');
+  if (laneDistCache.has(key)) return laneDistCache.get(key);
+  const s0 = nearestLaneCell(mb.at, null);
+  const off = dist(cellCenter(s0), mb.at);
+  const dmap = new Map([[s0[1] * GW + s0[0], 0]]);
+  const q = [s0];
+  while (q.length) {
+    const [x, y] = q.shift(), d0 = dmap.get(y * GW + x);
+    for (const [dx, dy] of DIRS) {
+      const nx = x + dx, ny = y + dy, k = ny * GW + nx;
+      if (nx >= 0 && ny >= 0 && nx < GW && ny < GH && isLane(nx, ny) && !dmap.has(k)) { dmap.set(k, d0 + CELL); q.push([nx, ny]); }
+    }
+  }
+  const r = { dmap, off };
+  laneDistCache.set(key, r);
+  return r;
+}
+function fitOnLanes(us, prevPos) {
+  if (!us.length) return null;
+  const tabs = us.map(u => laneDistances(u.mb));
+  let best = null, bc = Infinity;
+  for (const [k] of tabs[0].dmap) {
+    const x = k % GW, y = (k - x) / GW, here = cellCenter([x, y]);
+    const ds = tabs.map(t => { const d = t.dmap.get(k); return d == null ? 99 : Math.hypot(d, t.off); });
+    const c = fitCost(ds, us, here, prevPos);
+    if (c < bc) { bc = c; best = [x, y]; }
+  }
+  return best;
 }
 function nearestOnPath(path, p) {
   let best = null, bd = 1e9;
@@ -300,7 +358,8 @@ function nearestLaneCell(p, room) {
 function atDest(dest) {
   if (!st.pos) return false;
   const destRoom = roomAt(dest.at);
-  const roomHasBeacon = destRoom && mapBeacons().some(b => roomAt(b.at) === destRoom);
+  // 目的地の部屋に「今受信している」ビーコンがあるときだけ部屋の一致を条件にする（置いていないビーコンは考えない）
+  const roomHasBeacon = destRoom && st.pos.all.some(u => roomAt(u.mb.at) === destRoom);
   if (roomHasBeacon && st.room !== destRoom) return false;
   if (dist([st.pos.x, st.pos.y], dest.at) <= 1.2) return true;
   const top = st.pos.all[0];
@@ -734,7 +793,12 @@ function navRealUpdate() {
   // 到着：条件を満たす状態が約1.5秒（3回）続いたら
   nav.arriveN = atDest(nav.dest) ? (nav.arriveN || 0) + 1 : 0;
   if (nav.arriveN >= 3) { advance(nav.path.length - 1); return; }
-  // ルート上のいちばん近い地点（寄せる前の推定位置で判定。少しの後戻りは許容、先は 8m まで）
+  // ルート上の位置：線の上での位置合わせの結果（pathIdx）を使う
+  if (st.pos.pathIdx != null && st.pos.path === nav.path) {
+    nav.off = 0;
+    if (st.pos.pathIdx > nav.idx) advance(st.pos.pathIdx);
+    return;
+  }
   const raw = st.pos.raw || pos;
   let bj = nav.idx, bd = 1e9;
   const hi = Math.min(nav.path.length - 1, nav.idx + 40);
