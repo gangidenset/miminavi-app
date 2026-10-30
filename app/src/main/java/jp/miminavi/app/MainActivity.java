@@ -323,6 +323,11 @@ public class MainActivity extends Activity implements BeaconScanner.Listener, Se
         }
 
         @JavascriptInterface
+        public void setUuidFilter(String uuid) {
+            runOnUiThread(() -> scanner.setUuidFilter(uuid));
+        }
+
+        @JavascriptInterface
         public void refreshStatus() {
             runOnUiThread(MainActivity.this::sendStatus);
         }

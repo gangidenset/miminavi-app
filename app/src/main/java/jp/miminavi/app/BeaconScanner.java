@@ -5,6 +5,7 @@ import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothManager;
 import android.bluetooth.le.BluetoothLeScanner;
 import android.bluetooth.le.ScanCallback;
+import android.bluetooth.le.ScanFilter;
 import android.bluetooth.le.ScanRecord;
 import android.bluetooth.le.ScanResult;
 import android.bluetooth.le.ScanSettings;
@@ -59,6 +60,49 @@ public class BeaconScanner {
     private final Map<String, Long> others = new HashMap<>(); // ビーコン以外の BLE 機器
     private BluetoothLeScanner scanner;
     private boolean scanning = false;
+    private String uuidFilter = null;   // 例 "E2C56DB5-DFFB-48D2-B060-D0F5A71096E0"。null ならすべて
+
+    /** 使う iBeacon の UUID を設定する（null・空ならすべて）。スキャン中なら設定し直して再開する。 */
+    public void setUuidFilter(String uuid) {
+        String u = normalizeUuid(uuid);
+        if (u == null ? uuidFilter == null : u.equals(uuidFilter)) return;
+        uuidFilter = u;
+        synchronized (beacons) {
+            beacons.clear();
+            others.clear();
+        }
+        if (scanning) {
+            stop();
+            main.postDelayed(this::start, 300);
+        }
+    }
+
+    public String getUuidFilter() { return uuidFilter; }
+
+    static String normalizeUuid(String uuid) {
+        if (uuid == null) return null;
+        String hex = uuid.replaceAll("[^0-9A-Fa-f]", "").toUpperCase();
+        if (hex.length() != 32) return null;
+        return hex.substring(0, 8) + "-" + hex.substring(8, 12) + "-" + hex.substring(12, 16) + "-"
+                + hex.substring(16, 20) + "-" + hex.substring(20);
+    }
+
+    /** OS 側の絞り込み：Apple のメーカーデータで先頭が 02 15 + UUID の広告だけを受け取る（iBeacon の形式） */
+    private List<ScanFilter> buildFilters() {
+        if (uuidFilter == null) return null;
+        String hex = uuidFilter.replace("-", "");
+        byte[] data = new byte[18];
+        byte[] mask = new byte[18];
+        data[0] = 0x02;
+        data[1] = 0x15;
+        for (int i = 0; i < 16; i++) {
+            data[2 + i] = (byte) Integer.parseInt(hex.substring(i * 2, i * 2 + 2), 16);
+        }
+        for (int i = 0; i < 18; i++) mask[i] = (byte) 0xFF;
+        List<ScanFilter> list = new ArrayList<>();
+        list.add(new ScanFilter.Builder().setManufacturerData(0x004C, data, mask).build());
+        return list;
+    }
 
     public BeaconScanner(Context context, Listener listener) {
         this.context = context.getApplicationContext();
@@ -90,7 +134,7 @@ public class BeaconScanner {
                 .setReportDelay(0)
                 .build();
         try {
-            scanner.startScan(null, settings, callback);
+            scanner.startScan(buildFilters(), settings, callback);
             scanning = true;
             main.removeCallbacks(publisher);
             main.postDelayed(publisher, PUBLISH_MS);
@@ -143,7 +187,7 @@ public class BeaconScanner {
         BeaconParser.Beacon b = BeaconParser.parse(rec == null ? null : rec.getBytes());
         long now = SystemClock.elapsedRealtime();
         synchronized (beacons) {
-            if (b == null) {
+            if (b == null || (uuidFilter != null && !("iBeacon".equals(b.type) && uuidFilter.equals(b.uuid)))) {
                 if (r.getDevice() != null) others.put(r.getDevice().getAddress(), now);
                 return;
             }
@@ -210,6 +254,7 @@ public class BeaconScanner {
             while (oi.hasNext()) if (now - oi.next().getValue() > FORGET_MS) oi.remove();
             try {
                 root.put("scanning", scanning);
+                root.put("uuidFilter", uuidFilter == null ? JSONObject.NULL : uuidFilter);
                 root.put("others", others.size());
                 root.put("beacons", arr);
             } catch (JSONException ignored) { }

@@ -133,6 +133,11 @@
   <section class="view" id="v-beacons" hidden>
     <div class="appbar"><div class="logo sm">受信中のビーコン</div><span class="chip" id="otherChip">BLE 0台</span></div>
     <div class="warn" id="beaconWarn" hidden></div>
+    <div class="card">
+      <h3>使うUUID<span class="sub">自分のiPhoneだけを拾う</span></h3>
+      <p class="sub" id="uuidText"></p>
+      <div class="row-btns"><button class="btn small ghost" id="uuidClear" hidden>解除してすべて使う</button></div>
+    </div>
     <div id="beaconList" class="blist"><p class="sub">ビーコンを探しています…</p></div>
     <div class="card">
       <h3>距離の推定</h3>
