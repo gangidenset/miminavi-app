@@ -28,6 +28,11 @@ const BEACONS = MAP.beacons;        // [{label, minor, place, at}]
 const beaconPlace = b => b.place || placeName(b.at);
 const ENTRY = (MAP.doors.find(d => /入口/.test(d.name)) || {}).cell || DESTS[0].cell;
 
+// UUID を 8-4-4-4-12 の大文字に整える（形式が違えば空文字）
+function normUuid(u) {
+  const h = String(u || '').replace(/[^0-9a-fA-F]/g, '').toUpperCase();
+  return h.length === 32 ? `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}` : '';
+}
 const walkable = (x, y) => x >= 0 && y >= 0 && x < GW && y < GH && ROWS[y][x] !== '#';
 // 案内ルート（draw.io の赤いライン）。ルートはここを優先して通り、現在地もここに寄せる
 const LANES = G.lanes || null;
@@ -91,7 +96,8 @@ const st = {
   view: 'home', tab: 'guide', sound: true,
   status: null, beacons: [], others: 0, scanning: false,
   heading: null, pos: null, nav: null, room: null, roomCand: null, roomCandN: 0,
-  data: { v: 2, n: 4.0, tx: {}, northOffset: null, assign: {}, uuid: '' },
+  data: { v: 2, n: 4.0, tx: {}, northOffset: null, assign: {}, uuids: [] },
+  browse: false, raw: [],
   placing: null,
 };
 function load() {
@@ -104,7 +110,8 @@ function load() {
       if (d.tx && typeof d.tx === 'object') st.data.tx = d.tx;
       if (typeof d.northOffset === 'number') st.data.northOffset = d.northOffset;
       if (d.assign && typeof d.assign === 'object') st.data.assign = d.assign;
-      if (typeof d.uuid === 'string') st.data.uuid = d.uuid;
+      if (Array.isArray(d.uuids)) st.data.uuids = d.uuids.map(normUuid).filter(Boolean);
+      else if (typeof d.uuid === 'string' && d.uuid) st.data.uuids = [normUuid(d.uuid)];   // 旧形式（1つだけ）から移行
     }
   } catch (e) { /* 初回など */ }
 }
@@ -165,20 +172,26 @@ window.__native = (type, d) => {
   else if (type === 'heading') onHeading(d);
   else if (type === 'speech') onSpeech(d);
 };
-// 使う UUID（Beacon Simulator で全台に同じ値を設定）。空ならすべてのビーコン
-const normUuid = u => String(u || '').toUpperCase();
-const uuidOk = b => !st.data.uuid || (b.type === 'iBeacon' && normUuid(b.uuid) === normUuid(st.data.uuid));
-function setUuid(u) {
-  st.data.uuid = u ? normUuid(u) : '';
+// 使う UUID（複数可）。空ならすべてのビーコン。登録外のビーコンは一覧にも位置の計算にも使わない
+const uuidInList = (u, list) => list.includes(normUuid(u));
+const uuidOk = b => !st.data.uuids.length || (b.type === 'iBeacon' && uuidInList(b.uuid, st.data.uuids));
+// Android 側の絞り込み。「追加用に全部表示」中は絞り込まない
+function applyNativeFilter() {
+  if (N && N.setUuidFilter) N.setUuidFilter(st.browse ? '' : st.data.uuids.join(','));
+}
+function setUuids(list) {
+  st.data.uuids = [...new Set(list.map(normUuid).filter(Boolean))];
+  if (!st.data.uuids.length) st.browse = false;
   save();
-  if (N && N.setUuidFilter) N.setUuidFilter(st.data.uuid);
-  st.beacons = st.beacons.filter(uuidOk);
+  applyNativeFilter();
+  st.beacons = st.raw.filter(uuidOk);
   st.pos = null; st.room = null;
   estimate();
   renderBeacons();
 }
 function onBeacons(d) {
   const raw = d.beacons || [];
+  st.raw = raw;
   st.beacons = raw.filter(uuidOk);
   st.ignored = raw.length - st.beacons.length;
   st.others = d.others || 0;
@@ -910,16 +923,13 @@ function renderBeacons() {
   else if (!st.scanning && N) w = 'スキャンが止まっています。ホームの「スキャン開始」を押してください。';
   warn.hidden = !w; warn.textContent = w;
   $('nRange').value = st.data.n; $('nVal').textContent = Number(st.data.n).toFixed(1);
-  $('uuidText').innerHTML = st.data.uuid
-    ? `<b>${esc(st.data.uuid)}</b><br>このUUID以外のビーコンは無視しています${st.ignored ? `（今 ${st.ignored}台を無視）` : ''}。`
-    : '未設定：受信したすべてのビーコンを使います。受信中のビーコンの「このUUIDだけ使う」で設定できます。';
-  $('uuidClear').hidden = !st.data.uuid;
+  renderUuidCard();
 
-  const sorted = [...st.beacons].sort((a, b) => b.rssi - a.rssi);
+  const sorted = [...(st.browse ? st.raw : st.beacons)].sort((a, b) => b.rssi - a.rssi);
   if (!sorted.length) {
     rows.clear();
-    list.innerHTML = st.data.uuid
-      ? `<p class="sub">UUID ${esc(st.data.uuid)} のビーコンを探しています…<br>iPhone の Beacon Simulator で、この UUID の iBeacon を送信してください。</p>`
+    list.innerHTML = st.data.uuids.length
+      ? `<p class="sub">登録した UUID（${st.data.uuids.length}件）のビーコンを探しています…<br>iPhone の Beacon Simulator で、登録した UUID の iBeacon を送信してください。</p>`
       : `<p class="sub">ビーコンを探しています…（他のBLE機器は ${st.others}台受信）<br>iPhone の Beacon Simulator で iBeacon の送信を開始してください。</p>`;
     return;
   }
@@ -936,15 +946,17 @@ function renderBeacons() {
         <div class="bmeta"></div>
         <div class="bnums"><span><b class="r"></b> dBm</span><span class="rssi"><i></i></span><span>約<b class="d"></b>m</span></div>
         <label class="assign">図面の位置<select data-act="assign"></select></label>
-        <div class="bbtns"><button class="iconbtn" data-act="cal">1mで補正</button><button class="iconbtn" data-act="reset" hidden>補正を戻す</button><button class="iconbtn" data-act="uuid">このUUIDだけ使う</button></div>`;
+        <div class="bbtns"><button class="iconbtn" data-act="cal">1mで補正</button><button class="iconbtn" data-act="reset" hidden>補正を戻す</button><button class="iconbtn" data-act="uuid">このUUIDを使う</button></div>`;
       rows.set(b.key, el);
     }
     if (list.children[i] !== el) list.insertBefore(el, list.children[i] || null);
-    const mb = beaconOf(b);
+    const ok = uuidOk(b);
+    const mb = ok ? beaconOf(b) : null;
     const label = mb ? mb.label : null;
     el.classList.toggle('placed', !!mb);
-    el.classList.toggle('stale', b.ageMs > 3000);
-    el.querySelector('.name').textContent = mb ? `${mb.label}（${beaconPlace(mb)}）` : '図面に未配置';
+    el.classList.toggle('stale', b.ageMs > 3000 || !ok);
+    el.querySelector('.name').textContent = !ok ? '対象外（登録していない UUID）' : mb ? `${mb.label}（${beaconPlace(mb)}）` : '図面に未配置';
+    el.querySelector('.assign').hidden = !ok;
     const sel = el.querySelector('select');
     if (document.activeElement !== sel) {
       const a = st.data.assign[b.key];
@@ -967,7 +979,7 @@ function renderBeacons() {
     el.querySelector('.rssi i').style.width = Math.max(4, Math.min(100, (b.rssi + 100) * 1.6)) + '%';
     el.querySelector('[data-act="cal"]').hidden = !label;
     el.querySelector('[data-act="reset"]').hidden = !cal;
-    el.querySelector('[data-act="uuid"]').hidden = b.type !== 'iBeacon' || normUuid(b.uuid) === normUuid(st.data.uuid);
+    el.querySelector('[data-act="uuid"]').hidden = b.type !== 'iBeacon' || uuidInList(b.uuid, st.data.uuids);
   });
 }
 $('beaconList').addEventListener('change', e => {
@@ -992,10 +1004,10 @@ $('beaconList').addEventListener('change', e => {
 });
 $('beaconList').addEventListener('click', e => {
   const btn = e.target.closest('button'); if (!btn) return;
-  const b = st.beacons.find(x => x.key === btn.closest('.bcard').dataset.key); if (!b) return;
+  const b = st.raw.find(x => x.key === btn.closest('.bcard').dataset.key); if (!b) return;
   if (btn.dataset.act === 'uuid') {
-    setUuid(b.uuid);
-    say('このUUIDのビーコンだけを使います。');
+    setUuids(st.data.uuids.concat([b.uuid]));
+    say(`UUIDを登録しました。登録は${st.data.uuids.length}件です。`);
     return;
   }
   const mb = beaconOf(b); if (!mb) return;
@@ -1007,7 +1019,34 @@ $('beaconList').addEventListener('click', e => {
   }
   renderBeacons();
 });
-$('uuidClear').onclick = () => { setUuid(''); say('すべてのビーコンを使います。'); };
+function renderUuidCard() {
+  const list = st.data.uuids;
+  $('uuidList').innerHTML = list.length
+    ? list.map((u, i) => `<div class="prow"><i class="lg teal"></i><span class="grow mono">${esc(u)}</span><span class="rem">${st.beacons.filter(b => normUuid(b.uuid) === u).length}台</span><button class="iconbtn" data-del-uuid="${i}">外す</button></div>`).join('')
+    : '';
+  $('uuidText').textContent = list.length
+    ? `登録した ${list.length} 件の UUID 以外は無視しています${st.ignored && !st.browse ? `（今 ${st.ignored}台を無視）` : ''}。`
+    : '未設定：受信したすべてのビーコンを使います。受信中のビーコンの「このUUIDを使う」か、下の入力欄で登録できます。';
+  $('uuidClear').hidden = !list.length;
+  $('uuidBrowse').hidden = !list.length;
+  $('uuidBrowse').textContent = st.browse ? '追加用の表示をやめる' : '他のUUIDも表示する（追加用）';
+  $('uuidBrowse').setAttribute('aria-pressed', st.browse);
+}
+$('uuidList').addEventListener('click', e => {
+  const b = e.target.closest('[data-del-uuid]'); if (!b) return;
+  const list = st.data.uuids.slice(); list.splice(Number(b.dataset.delUuid), 1);
+  setUuids(list);
+});
+$('uuidAdd').addEventListener('submit', e => {
+  e.preventDefault();
+  const u = normUuid($('uuidInput').value);
+  if (!u) { $('uuidInput').setCustomValidity('UUID の形式（8-4-4-4-12 桁の16進数）で入力してください'); $('uuidInput').reportValidity(); return; }
+  $('uuidInput').setCustomValidity(''); $('uuidInput').value = ''; $('uuidInput').blur();
+  setUuids(st.data.uuids.concat([u]));
+});
+$('uuidInput').addEventListener('input', () => $('uuidInput').setCustomValidity(''));
+$('uuidBrowse').onclick = () => { st.browse = !st.browse; applyNativeFilter(); renderBeacons(); };
+$('uuidClear').onclick = () => { setUuids([]); say('すべてのビーコンを使います。'); };
 $('nRange').addEventListener('input', e => { st.data.n = Number(e.target.value); $('nVal').textContent = st.data.n.toFixed(1); save(); });
 
 // ------------------------------------------------------------ PC ブラウザ用の疑似データ（受付付近に立っている想定）
@@ -1032,7 +1071,7 @@ load();
 show('home');
 if (MAP.warnings && MAP.warnings.length) console.warn('地図データの注意:', MAP.warnings);
 if (N) {
-  if (st.data.uuid && N.setUuidFilter) N.setUuidFilter(st.data.uuid);
+  if (st.data.uuids.length) applyNativeFilter();
   N.startScan();
   setInterval(() => { if (!st.scanning) N.refreshStatus(); }, 3000);
 } else {

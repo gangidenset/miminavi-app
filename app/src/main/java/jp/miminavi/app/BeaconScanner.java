@@ -60,13 +60,15 @@ public class BeaconScanner {
     private final Map<String, Long> others = new HashMap<>(); // ビーコン以外の BLE 機器
     private BluetoothLeScanner scanner;
     private boolean scanning = false;
-    private String uuidFilter = null;   // 例 "E2C56DB5-DFFB-48D2-B060-D0F5A71096E0"。null ならすべて
+    private final java.util.LinkedHashSet<String> uuidFilter = new java.util.LinkedHashSet<>();   // 空ならすべて
 
-    /** 使う iBeacon の UUID を設定する（null・空ならすべて）。スキャン中なら設定し直して再開する。 */
-    public void setUuidFilter(String uuid) {
-        String u = normalizeUuid(uuid);
-        if (u == null ? uuidFilter == null : u.equals(uuidFilter)) return;
-        uuidFilter = u;
+    /** 使う iBeacon の UUID をカンマ区切りで設定する（空ならすべて）。スキャン中なら設定し直して再開する。 */
+    public void setUuidFilter(String csv) {
+        java.util.LinkedHashSet<String> next = new java.util.LinkedHashSet<>();
+        if (csv != null) for (String part : csv.split(",")) { String u = normalizeUuid(part); if (u != null) next.add(u); }
+        if (next.equals(uuidFilter)) return;
+        uuidFilter.clear();
+        uuidFilter.addAll(next);
         synchronized (beacons) {
             beacons.clear();
             others.clear();
@@ -76,8 +78,6 @@ public class BeaconScanner {
             main.postDelayed(this::start, 300);
         }
     }
-
-    public String getUuidFilter() { return uuidFilter; }
 
     static String normalizeUuid(String uuid) {
         if (uuid == null) return null;
@@ -89,18 +89,20 @@ public class BeaconScanner {
 
     /** OS 側の絞り込み：Apple のメーカーデータで先頭が 02 15 + UUID の広告だけを受け取る（iBeacon の形式） */
     private List<ScanFilter> buildFilters() {
-        if (uuidFilter == null) return null;
-        String hex = uuidFilter.replace("-", "");
-        byte[] data = new byte[18];
-        byte[] mask = new byte[18];
-        data[0] = 0x02;
-        data[1] = 0x15;
-        for (int i = 0; i < 16; i++) {
-            data[2 + i] = (byte) Integer.parseInt(hex.substring(i * 2, i * 2 + 2), 16);
-        }
-        for (int i = 0; i < 18; i++) mask[i] = (byte) 0xFF;
+        if (uuidFilter.isEmpty()) return null;
         List<ScanFilter> list = new ArrayList<>();
-        list.add(new ScanFilter.Builder().setManufacturerData(0x004C, data, mask).build());
+        for (String u : uuidFilter) {
+            String hex = u.replace("-", "");
+            byte[] data = new byte[18];
+            byte[] mask = new byte[18];
+            data[0] = 0x02;
+            data[1] = 0x15;
+            for (int i = 0; i < 16; i++) {
+                data[2 + i] = (byte) Integer.parseInt(hex.substring(i * 2, i * 2 + 2), 16);
+            }
+            for (int i = 0; i < 18; i++) mask[i] = (byte) 0xFF;
+            list.add(new ScanFilter.Builder().setManufacturerData(0x004C, data, mask).build());
+        }
         return list;
     }
 
@@ -187,7 +189,7 @@ public class BeaconScanner {
         BeaconParser.Beacon b = BeaconParser.parse(rec == null ? null : rec.getBytes());
         long now = SystemClock.elapsedRealtime();
         synchronized (beacons) {
-            if (b == null || (uuidFilter != null && !("iBeacon".equals(b.type) && uuidFilter.equals(b.uuid)))) {
+            if (b == null || (!uuidFilter.isEmpty() && !("iBeacon".equals(b.type) && uuidFilter.contains(b.uuid)))) {
                 if (r.getDevice() != null) others.put(r.getDevice().getAddress(), now);
                 return;
             }
@@ -254,7 +256,7 @@ public class BeaconScanner {
             while (oi.hasNext()) if (now - oi.next().getValue() > FORGET_MS) oi.remove();
             try {
                 root.put("scanning", scanning);
-                root.put("uuidFilter", uuidFilter == null ? JSONObject.NULL : uuidFilter);
+                root.put("uuidFilter", String.join(",", uuidFilter));
                 root.put("others", others.size());
                 root.put("beacons", arr);
             } catch (JSONException ignored) { }

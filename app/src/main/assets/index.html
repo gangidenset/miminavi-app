@@ -134,9 +134,11 @@
     <div class="appbar"><div class="logo sm">受信中のビーコン</div><span class="chip" id="otherChip">BLE 0台</span></div>
     <div class="warn" id="beaconWarn" hidden></div>
     <div class="card">
-      <h3>使うUUID<span class="sub">自分のiPhoneだけを拾う</span></h3>
+      <h3>使うUUID<span class="sub">登録したUUIDだけを拾う（複数可）</span></h3>
+      <div class="plist" id="uuidList"></div>
       <p class="sub" id="uuidText"></p>
-      <div class="row-btns"><button class="btn small ghost" id="uuidClear" hidden>解除してすべて使う</button></div>
+      <form class="typed" id="uuidAdd"><input id="uuidInput" placeholder="UUIDを入力して追加" autocomplete="off" autocapitalize="characters" spellcheck="false"><button>追加</button></form>
+      <div class="row-btns"><button class="btn small ghost" id="uuidBrowse" hidden></button><button class="btn small ghost" id="uuidClear" hidden>すべて解除</button></div>
     </div>
     <div id="beaconList" class="blist"><p class="sub">ビーコンを探しています…</p></div>
     <div class="card">
