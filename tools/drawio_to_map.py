@@ -10,6 +10,8 @@ draw.io 側のルール（各図形の「データを編集」= Ctrl+M で設定
          access = staff             … 関係者のみのドア
   kind = furniture / pillar / equipment … 家具・柱・設備。通れない
   kind = room                       … 部屋・エリア（名前の表示と、建物の内側の判定に使う）
+  kind = corridor                   … 案内ルート（通路）。ルートはここを優先して通り、現在地もここに寄せる
+                                      （kind がなくても、draw.io の赤い四角 = 塗り #f8cecc・線 #b85450 は通路として扱う）
   kind = destination                … 目的地。label = 画面と読み上げの名前、keywords = 呼び方（カンマ区切り）
   kind = beacon                     … ビーコン。label = B-01 など、minor = iPhone 側の Minor 番号
   「イス」レイヤーの図形            … デスクに収納する前提なので通れる扱い（表示のみ）
@@ -203,6 +205,10 @@ def convert(src):
     def kind_of(cid):
         a = cells[cid]['attrs']
         k = (a.get('kind') or '').strip()
+        st_ = cells[cid]['style']
+        if cells[cid]['cell'].get('vertex') == '1' and \
+                st_.get('fillColor', '').lower() == '#f8cecc' and st_.get('strokeColor', '').lower() == '#b85450':
+            return 'corridor'
         if k:
             return k
         lname = layer_names.get(layer_of(cells, cid), '')
@@ -246,7 +252,7 @@ def convert(src):
     def M(p):  # draw.io 座標 → m
         return (p[0] * sx / 1000.0, p[1] * sy / 1000.0)
 
-    walls, doors, obstacles, chairs, rooms, dests, beacons = [], [], [], [], [], [], []
+    walls, doors, obstacles, chairs, rooms, dests, beacons, corridors = [], [], [], [], [], [], [], []
     for cid in order:
         info = cells[cid]
         a = info['attrs']
@@ -275,6 +281,8 @@ def convert(src):
                 chairs.append({'poly': poly, 'shape': 'ellipse' if 'ellipse' in info['style'] else 'rect'})
             elif k == 'room':
                 rooms.append({'name': label, 'poly': poly})
+            elif k == 'corridor':
+                corridors.append({'name': name, 'poly': poly})
             elif k == 'destination':
                 kws = [s.strip() for s in re.split(r'[,、，]', a.get('keywords', '')) if s.strip()]
                 dests.append({'id': cid, 'name': label, 'keywords': kws, 'at': (cx, cy),
@@ -405,6 +413,32 @@ def convert(src):
                 dist[ny][nx] = dist[y][x] + 1
                 q.append((nx, ny))
 
+    # 案内ルート（通路）のマス
+    lane = [[False] * W for _ in range(H)]
+    for c in corridors:
+        x0, x1, y0, y1 = bbox_cells(c['poly'], 0.1)
+        for iy in range(y0, y1 + 1):
+            for ix in range(x0, x1 + 1):
+                if free[iy][ix] and (in_poly(*center(ix, iy), c['poly']) or poly_edge_dist(*center(ix, iy), c['poly']) <= 0.1):
+                    lane[iy][ix] = True
+    lane_rows = [''.join('1' if lane[iy][ix] else '0' for ix in range(W)) for iy in range(H)]
+    if corridors:
+        # つながっているか確認
+        start = next(((ix, iy) for iy in range(H) for ix in range(W) if lane[iy][ix]), None)
+        seen_ = set()
+        q = deque([start] if start else [])
+        while q:
+            x, y = q.popleft()
+            if (x, y) in seen_:
+                continue
+            seen_.add((x, y))
+            for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+                if 0 <= nx < W and 0 <= ny < H and lane[ny][nx] and (nx, ny) not in seen_:
+                    q.append((nx, ny))
+        total = sum(r.count('1') for r in lane_rows)
+        if len(seen_) != total:
+            warnings.append(f'案内ルートが途中で途切れています（{total - len(seen_)} マスがつながっていません。壁や家具と重なっていないか確認してください）')
+
     rows = []
     for iy in range(H):
         row = []
@@ -463,7 +497,9 @@ def convert(src):
         'source': src.split('/')[-1],
         'scale': scale_note,
         'bounds': [R(minx), R(miny), R(maxx), R(maxy)],
-        'grid': {'cell': CELL, 'origin': [R(minx), R(miny)], 'w': W, 'h': H, 'rows': rows},
+        'grid': {'cell': CELL, 'origin': [R(minx), R(miny)], 'w': W, 'h': H, 'rows': rows,
+                 'lanes': lane_rows if corridors else None},
+        'corridors': [{'name': c['name'], 'poly': [RP(p) for p in c['poly']]} for c in corridors],
         'rooms': [{'name': r['name'], 'poly': [RP(p) for p in r['poly']]} for r in rooms],
         'walls': [{'kind': w['kind'], 'pts': [RP(p) for p in w['pts']]} for w in walls],
         'doors': [{'kind': d['kind'], 'name': d['name'], 'access': d['access'], 'width': d['width_m'],
@@ -494,7 +530,8 @@ def main():
     print(f"  範囲 {data['bounds'][2]-data['bounds'][0]:.2f}m × {data['bounds'][3]-data['bounds'][1]:.2f}m、"
           f"マス {g['w']}×{g['h']}（{g['cell']}m）")
     print(f"  壁 {len(data['walls'])}、ドア・開口 {len(data['doors'])}、家具など {len(data['obstacles'])}、"
-          f"イス {len(data['chairs'])}、部屋 {len(data['rooms'])}、目的地 {len(data['dests'])}、ビーコン {len(data['beacons'])}")
+          f"イス {len(data['chairs'])}、部屋 {len(data['rooms'])}、目的地 {len(data['dests'])}、ビーコン {len(data['beacons'])}、"
+          f"案内ルート {len(data['corridors'])}")
     for w in data['warnings']:
         print('  注意: ' + w)
 

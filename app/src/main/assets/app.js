@@ -24,10 +24,15 @@ const [BX0, BY0, BX1, BY1] = MAP.bounds;
 const DIRS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
 const DNAME = ['図面の上', '図面の右', '図面の下', '図面の左'];
 const DESTS = MAP.dests;
-const BEACONS = MAP.beacons;        // [{label, minor, at}]
+const BEACONS = MAP.beacons;        // [{label, minor, place, at}]
+const beaconPlace = b => b.place || placeName(b.at);
 const ENTRY = (MAP.doors.find(d => /入口/.test(d.name)) || {}).cell || DESTS[0].cell;
 
 const walkable = (x, y) => x >= 0 && y >= 0 && x < GW && y < GH && ROWS[y][x] !== '#';
+// 案内ルート（draw.io の赤いライン）。ルートはここを優先して通り、現在地もここに寄せる
+const LANES = G.lanes || null;
+const isLane = (x, y) => !!LANES && LANES[y][x] === '1';
+const OFF_LANE_COST = 10;           // 案内ルートの外を1マス進むときの追加コスト
 const cellCenter = c => [GX + (c[0] + 0.5) * CELL, GY + (c[1] + 0.5) * CELL];
 const cellOf = p => [Math.floor((p[0] - GX) / CELL), Math.floor((p[1] - GY) / CELL)];
 const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
@@ -262,9 +267,34 @@ function estimate() {
     if (c) [x, y] = cellCenter(c);
   }
   // 前回となめらかにつなぐ（部屋が変わったときはそのまま移る）
-  if (st.pos && prevRoom === st.room) { x = st.pos.x + 0.4 * (x - st.pos.x); y = st.pos.y + 0.4 * (y - st.pos.y); }
-  const cell = nearestFree([x, y]);
-  st.pos = { x, y, acc: used[0].d, used, all, cell, room: st.room, roomOnly: inRoom.length > 0 };
+  if (st.pos && prevRoom === st.room) { x = st.pos.raw[0] + 0.4 * (x - st.pos.raw[0]); y = st.pos.raw[1] + 0.4 * (y - st.pos.raw[1]); }
+  const raw = [x, y];
+  // 案内ルートの上に寄せる（案内中はそのルート、そうでなければ赤いライン）
+  let cell = null;
+  if (st.nav && !st.nav.sim) cell = nearestOnPath(st.nav.path, raw);
+  else if (LANES) cell = nearestLaneCell(raw, st.room);
+  if (!cell) cell = nearestFree(raw);
+  const [px, py] = (st.nav && !st.nav.sim) || LANES ? cellCenter(cell) : raw;
+  st.pos = { x: px, y: py, raw, acc: used[0].d, used, all, cell, room: st.room, roomOnly: inRoom.length > 0 };
+}
+function nearestOnPath(path, p) {
+  let best = null, bd = 1e9;
+  path.forEach(c => { const d = dist(cellCenter(c), p); if (d < bd) { bd = d; best = c; } });
+  return best;
+}
+const laneCellCache = new Map();
+function nearestLaneCell(p, room) {
+  const key = room ? room.name : '*';
+  let cells = laneCellCache.get(key);
+  if (!cells) {
+    cells = [];
+    for (let y = 0; y < GH; y++) for (let x = 0; x < GW; x++) if (isLane(x, y) && (!room || roomAt(cellCenter([x, y])) === room)) cells.push([x, y]);
+    laneCellCache.set(key, cells);
+  }
+  if (!cells.length) return room ? nearestLaneCell(p, null) : null;
+  let best = null, bd = 1e9;
+  cells.forEach(c => { const d = dist(cellCenter(c), p); if (d < bd) { bd = d; best = c; } });
+  return best;
 }
 // 目的地に着いたか：同じ部屋にいて、目的地に近い（または目的地そばのビーコンがいちばん強い）
 function atDest(dest) {
@@ -301,6 +331,7 @@ function buildMap(el, opt = {}) {
   let s = `<svg viewBox="${v[0] * U} ${v[1] * U} ${v[2] * U} ${v[3] * U}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="${esc(MAP.name)}の図面">`;
   s += `<rect x="${(v[0] - 5) * U}" y="${(v[1] - 5) * U}" width="${(v[2] + 10) * U}" height="${(v[3] + 10) * U}" fill="var(--surface)"/>`;
   MAP.rooms.forEach(r => { s += `<polygon points="${poly(r.poly)}" fill="var(--floor)" stroke="none"/>`; });
+  (MAP.corridors || []).forEach(c => { s += `<polygon points="${poly(c.poly)}" fill="var(--coral-soft)" stroke="var(--coral)" stroke-width="2" stroke-dasharray="10 8" opacity=".9"/>`; });
   MAP.chairs.forEach(c => { s += `<polygon points="${poly(c.poly)}" fill="none" stroke="var(--line)" stroke-width="3" stroke-dasharray="6 5"/>`; });
   MAP.obstacles.forEach(o => {
     const dark = o.kind === 'pillar' || o.kind === 'equipment';
@@ -531,7 +562,8 @@ function route(s, g) {
     for (let nd = 0; nd < 4; nd++) {
       const nx = x + DIRS[nd][0], ny = y + DIRS[nd][1];
       if (!walkable(nx, ny)) continue;
-      const nc = c + 1 + (STEP_COST[ROWS[ny][nx]] || 0) + (nd !== d ? TURN_COST : 0);
+      const step = LANES ? (isLane(nx, ny) ? 0 : OFF_LANE_COST + (STEP_COST[ROWS[ny][nx]] || 0)) : (STEP_COST[ROWS[ny][nx]] || 0);
+      const nc = c + 1 + step + (nd !== d ? TURN_COST : 0);
       const nk = key(nx, ny, nd);
       if (nc < cost[nk]) { cost[nk] = nc; prev[nk] = k; push(nc, nk); }
     }
@@ -702,14 +734,15 @@ function navRealUpdate() {
   // 到着：条件を満たす状態が約1.5秒（3回）続いたら
   nav.arriveN = atDest(nav.dest) ? (nav.arriveN || 0) + 1 : 0;
   if (nav.arriveN >= 3) { advance(nav.path.length - 1); return; }
-  // ルート上のいちばん近い地点（少しの後戻りは許容、先は 8m まで）
+  // ルート上のいちばん近い地点（寄せる前の推定位置で判定。少しの後戻りは許容、先は 8m まで）
+  const raw = st.pos.raw || pos;
   let bj = nav.idx, bd = 1e9;
   const hi = Math.min(nav.path.length - 1, nav.idx + 40);
   for (let j = Math.max(0, nav.idx - 10); j <= hi; j++) {
-    const d = dist(cellCenter(nav.path[j]), pos);
+    const d = dist(cellCenter(nav.path[j]), raw);
     if (d < bd - 1e-6) { bd = d; bj = j; }
   }
-  if (bd <= 1.6) {
+  if (bd <= 2.0) {
     nav.off = 0;
     if (bj > nav.idx) advance(bj);
   } else if (++nav.off >= 6) {   // 約3秒続けて外れていたら引き直す
@@ -774,7 +807,7 @@ function renderPlan(full) {
     const h = seen.get(b.label);
     const how = b.custom ? '自分で配置' : h && h.mb.manual ? '手動で割り当て' : `Minor ${b.minor ?? '?'}`;
     const del = b.custom ? `<button class="iconbtn" data-del="${esc(b.label)}">外す</button>` : '';
-    return `<div class="prow"><i class="lg ${h ? 'teal' : 'gray'}"></i><b class="${h ? '' : 'off'}">${esc(b.label)}</b><span class="grow">${esc(placeName(b.at))}・${how}</span><span class="rem">${h ? `${Math.round(h.b.rssi)}dBm 約${h.d.toFixed(1)}m` : '未受信'}</span>${del}</div>`;
+    return `<div class="prow"><i class="lg ${h ? 'teal' : 'gray'}"></i><b class="${h ? '' : 'off'}">${esc(b.label)}</b><span class="grow">${esc(beaconPlace(b))}・${how}</span><span class="rem">${h ? `${Math.round(h.b.rssi)}dBm 約${h.d.toFixed(1)}m` : '未受信'}</span>${del}</div>`;
   }).join('');
 }
 
@@ -840,14 +873,14 @@ function renderBeacons() {
     const label = mb ? mb.label : null;
     el.classList.toggle('placed', !!mb);
     el.classList.toggle('stale', b.ageMs > 3000);
-    el.querySelector('.name').textContent = mb ? `${mb.label}（${placeName(mb.at)}）` : '図面に未配置';
+    el.querySelector('.name').textContent = mb ? `${mb.label}（${beaconPlace(mb)}）` : '図面に未配置';
     const sel = el.querySelector('select');
     if (document.activeElement !== sel) {
       const a = st.data.assign[b.key];
       const taken = new Map(Object.entries(st.data.assign).filter(([k]) => k !== b.key).map(([k, v]) => [v.label, k]));
       const auto = !a && mb ? `自動（Minor ${b.minor} → ${mb.label}）` : '自動（Minor 番号で対応）';
       let opts = `<option value="">${esc(auto)}</option>`;
-      opts += BEACONS.map(x => `<option value="${esc(x.label)}">${esc(x.label)}：${esc(placeName(x.at))}${taken.has(x.label) ? '（使用中）' : ''}</option>`).join('');
+      opts += BEACONS.map(x => `<option value="${esc(x.label)}">${esc(x.label)}：${esc(beaconPlace(x))}${taken.has(x.label) ? '（使用中）' : ''}</option>`).join('');
       if (a && a.at) opts += `<option value="@keep">${esc(a.label)}：自分で配置した場所</option>`;
       opts += `<option value="@tap">図面をタップして場所を指定…</option>`;
       if (sel.dataset.sig !== opts) { sel.innerHTML = opts; sel.dataset.sig = opts; }
@@ -881,7 +914,7 @@ $('beaconList').addEventListener('change', e => {
     Object.keys(st.data.assign).forEach(k => { if (k !== key && st.data.assign[k].label === v) delete st.data.assign[k]; });
     st.data.assign[key] = { label: v };
     const mb = BEACONS.find(x => x.label === v);
-    say(`${v}、${placeName(mb.at)}に割り当てました。`);
+    say(`${v}、${beaconPlace(mb)}に割り当てました。`);
   }
   save(); estimate(); sel.blur(); renderBeacons();
 });

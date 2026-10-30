@@ -90,6 +90,17 @@
             <mxGeometry height="101" width="86" x="1460" y="1100" as="geometry" />
           </mxCell>
         </object>
+        <mxCell id="L_lane" parent="0" value="通路（案内ルート）" />
+        <object label="" kind="corridor" name="案内ルート（縦：トイレ前〜受付前）" id="c301">
+          <mxCell parent="L_lane" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;opacity=80;" vertex="1">
+            <mxGeometry x="773" y="168" width="46" height="783" as="geometry" />
+          </mxCell>
+        </object>
+        <object label="" kind="corridor" name="案内ルート（横：会議室①〜執務スペース）" id="c302">
+          <mxCell parent="L_lane" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;opacity=80;" vertex="1">
+            <mxGeometry x="383" y="934" width="1156" height="34" as="geometry" />
+          </mxCell>
+        </object>
         <mxCell id="uuhO9dmPfqnmZsen3Hdi-5" parent="0" style="locked=0;" value="イス" />
         <mxCell id="uuhO9dmPfqnmZsen3Hdi-6" parent="uuhO9dmPfqnmZsen3Hdi-5" style="ellipse;whiteSpace=wrap;html=1;shapeInside=1;aspect=fixed;" value="イス" vertex="1">
           <mxGeometry height="50" width="50" x="1610" y="860" as="geometry" />
@@ -796,69 +807,69 @@
           </mxCell>
         </object>
         <mxCell id="L_beacon" parent="0" style="locked=0;" value="ビーコン設置位置（案）" />
-        <object label="B-01" kind="beacon" name="B-01" place="入口" minor="1" id="c113">
+        <object label="B-01" kind="beacon" name="B-01" place="トイレ前（廊下）" minor="1" id="c113">
           <mxCell parent="L_beacon" style="ellipse;whiteSpace=wrap;html=1;fillColor=#1C9488;strokeColor=#FFFFFF;strokeWidth=2;fontSize=9;fontColor=#FFFFFF;fontStyle=1;" vertex="1">
-            <mxGeometry height="31" width="30" x="722" y="500" as="geometry" />
+            <mxGeometry height="30" width="30" x="781" y="170" as="geometry" />
           </mxCell>
         </object>
-        <object label="B-02" kind="beacon" name="B-02" place="エントランス" minor="2" id="c114">
+        <object label="B-02" kind="beacon" name="B-02" place="入口（IN）" minor="2" id="c114">
           <mxCell parent="L_beacon" style="ellipse;whiteSpace=wrap;html=1;fillColor=#1C9488;strokeColor=#FFFFFF;strokeWidth=2;fontSize=9;fontColor=#FFFFFF;fontStyle=1;" vertex="1">
-            <mxGeometry height="30" width="30" x="629" y="735" as="geometry" />
+            <mxGeometry height="30" width="30" x="781" y="455" as="geometry" />
           </mxCell>
         </object>
-        <object label="B-03" kind="beacon" name="B-03" place="会議室①" minor="3" id="c115">
+        <object label="B-03" kind="beacon" name="B-03" place="エントランス中央" minor="3" id="c115">
           <mxCell parent="L_beacon" style="ellipse;whiteSpace=wrap;html=1;fillColor=#1C9488;strokeColor=#FFFFFF;strokeWidth=2;fontSize=9;fontColor=#FFFFFF;fontStyle=1;" vertex="1">
-            <mxGeometry height="30" width="30" x="250" y="770" as="geometry" />
+            <mxGeometry height="30" width="30" x="781" y="695" as="geometry" />
           </mxCell>
         </object>
-        <object label="B-04" kind="beacon" name="B-04" place="MTG A" minor="4" id="c116">
+        <object label="B-04" kind="beacon" name="B-04" place="受付前（交差点）" minor="4" id="c116">
           <mxCell parent="L_beacon" style="ellipse;whiteSpace=wrap;html=1;fillColor=#1C9488;strokeColor=#FFFFFF;strokeWidth=2;fontSize=9;fontColor=#FFFFFF;fontStyle=1;" vertex="1">
-            <mxGeometry height="30" width="30" x="310" y="1100" as="geometry" />
+            <mxGeometry height="30" width="30" x="781" y="936" as="geometry" />
           </mxCell>
         </object>
-        <object label="B-05" kind="beacon" name="B-05" place="MTG B" minor="5" id="c117">
+        <object label="B-05" kind="beacon" name="B-05" place="会議室①入口（室内）" minor="5" id="c117">
           <mxCell parent="L_beacon" style="ellipse;whiteSpace=wrap;html=1;fillColor=#1C9488;strokeColor=#FFFFFF;strokeWidth=2;fontSize=9;fontColor=#FFFFFF;fontStyle=1;" vertex="1">
-            <mxGeometry height="30" width="30" x="779.5" y="1160" as="geometry" />
+            <mxGeometry height="30" width="30" x="405" y="936" as="geometry" />
           </mxCell>
         </object>
-        <object label="B-06" kind="beacon" name="B-06" place="セキュリティ扉" minor="6" id="c118">
+        <object label="B-06" kind="beacon" name="B-06" place="エントランス西" minor="6" id="c118">
           <mxCell parent="L_beacon" style="ellipse;whiteSpace=wrap;html=1;fillColor=#1C9488;strokeColor=#FFFFFF;strokeWidth=2;fontSize=9;fontColor=#FFFFFF;fontStyle=1;" vertex="1">
-            <mxGeometry height="31" width="31" x="590" y="163" as="geometry" />
+            <mxGeometry height="30" width="30" x="593" y="936" as="geometry" />
           </mxCell>
         </object>
-        <object label="B-07" kind="beacon" name="B-07" place="ロッカー" minor="7" id="c119">
+        <object label="B-07" kind="beacon" name="B-07" place="セキュリティ扉の先" minor="7" id="c119">
           <mxCell parent="L_beacon" style="ellipse;whiteSpace=wrap;html=1;fillColor=#1C9488;strokeColor=#FFFFFF;strokeWidth=2;fontSize=9;fontColor=#FFFFFF;fontStyle=1;" vertex="1">
-            <mxGeometry height="30" width="30" x="870" y="690" as="geometry" />
+            <mxGeometry height="30" width="30" x="985" y="936" as="geometry" />
           </mxCell>
         </object>
-        <object label="B-08" kind="beacon" name="B-08" place="書庫前" minor="8" id="c120">
+        <object label="B-08" kind="beacon" name="B-08" place="執務 中央" minor="8" id="c120">
           <mxCell parent="L_beacon" style="ellipse;whiteSpace=wrap;html=1;fillColor=#1C9488;strokeColor=#FFFFFF;strokeWidth=2;fontSize=9;fontColor=#FFFFFF;fontStyle=1;" vertex="1">
-            <mxGeometry height="30" width="30" x="1302" y="574" as="geometry" />
+            <mxGeometry height="30" width="30" x="1160" y="936" as="geometry" />
           </mxCell>
         </object>
-        <object label="B-09" kind="beacon" name="B-09" place="執務 北" minor="9" id="c121">
+        <object label="B-09" kind="beacon" name="B-09" place="事務所前" minor="9" id="c121">
           <mxCell parent="L_beacon" style="ellipse;whiteSpace=wrap;html=1;fillColor=#1C9488;strokeColor=#FFFFFF;strokeWidth=2;fontSize=9;fontColor=#FFFFFF;fontStyle=1;" vertex="1">
-            <mxGeometry height="30" width="30" x="1296" y="859" as="geometry" />
+            <mxGeometry height="30" width="30" x="1334" y="936" as="geometry" />
           </mxCell>
         </object>
-        <object label="B-10" kind="beacon" name="B-10" place="執務 南" minor="10" id="c122">
+        <object label="B-10" kind="beacon" name="B-10" place="執務 東" minor="10" id="c122">
           <mxCell parent="L_beacon" style="ellipse;whiteSpace=wrap;html=1;fillColor=#1C9488;strokeColor=#FFFFFF;strokeWidth=2;fontSize=9;fontColor=#FFFFFF;fontStyle=1;" vertex="1">
-            <mxGeometry height="30" width="30" x="1315" y="1144" as="geometry" />
+            <mxGeometry height="30" width="30" x="1505" y="936" as="geometry" />
           </mxCell>
         </object>
-        <object label="B-11" kind="beacon" name="B-11" place="OA" minor="11" id="c123">
+        <object label="B-11" kind="beacon" name="B-11" place="会議室（8）" minor="11" id="c123">
           <mxCell parent="L_beacon" style="ellipse;whiteSpace=wrap;html=1;fillColor=#1C9488;strokeColor=#FFFFFF;strokeWidth=2;fontSize=9;fontColor=#FFFFFF;fontStyle=1;" vertex="1">
-            <mxGeometry height="30" width="30" x="900" y="1190" as="geometry" />
+            <mxGeometry height="30" width="30" x="255" y="785" as="geometry" />
           </mxCell>
         </object>
-        <object label="B-12" kind="beacon" name="B-12" place="キッチン" minor="12" id="c124">
+        <object label="B-12" kind="beacon" name="B-12" place="男子トイレ（入口付近）" minor="12" id="c124">
           <mxCell parent="L_beacon" style="ellipse;whiteSpace=wrap;html=1;fillColor=#1C9488;strokeColor=#FFFFFF;strokeWidth=2;fontSize=9;fontColor=#FFFFFF;fontStyle=1;" vertex="1">
-            <mxGeometry height="30" width="30" x="1590" y="1296" as="geometry" />
+            <mxGeometry height="30" width="30" x="885" y="105" as="geometry" />
           </mxCell>
         </object>
-        <object label="B-13" kind="beacon" name="B-13" place="トイレ前" minor="13" id="c125">
+        <object label="B-13" kind="beacon" name="B-13" place="女子トイレ（入口付近）" minor="13" id="c125">
           <mxCell parent="L_beacon" style="ellipse;whiteSpace=wrap;html=1;fillColor=#1C9488;strokeColor=#FFFFFF;strokeWidth=2;fontSize=9;fontColor=#FFFFFF;fontStyle=1;" vertex="1">
-            <mxGeometry height="30" width="30" x="807" y="171" as="geometry" />
+            <mxGeometry height="30" width="30" x="885" y="225" as="geometry" />
           </mxCell>
         </object>
         <mxCell id="L_note" parent="0" style="locked=0;" value="メモ" />

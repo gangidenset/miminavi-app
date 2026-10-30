@@ -152,3 +152,4 @@ button:focus-visible,input:focus-visible{outline:3px solid var(--coral);outline-
 .map.plan{flex:none;aspect-ratio:var(--map-ratio,1.2);min-height:0}
 .assign{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)}
 .assign select{flex:1;min-width:0;border:1.5px solid var(--line);border-radius:10px;padding:6px 8px;background:var(--surface);color:var(--ink);font:inherit;font-size:13px}
+.lg.lane{background:var(--coral-soft);border:1.5px dashed var(--coral);border-radius:2px}
