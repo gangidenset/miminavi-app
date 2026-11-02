@@ -141,6 +141,35 @@
       <div class="row-btns"><button class="btn small ghost" id="uuidBrowse" hidden></button><button class="btn small ghost" id="uuidClear" hidden>すべて解除</button></div>
     </div>
     <div id="beaconList" class="blist"><p class="sub">ビーコンを探しています…</p></div>
+    <div class="card" id="recCard">
+      <h3>測定の記録<span class="sub">RSSI・推定距離を記録して CSV で書き出す</span></h3>
+      <form class="recform" id="recForm">
+        <label class="wide">対象のビーコン<select name="target" id="recTarget"><option value="">受信中のすべて</option></select></label>
+        <label>実際の距離 (m)<input name="dist" type="number" inputmode="decimal" step="0.1" min="0" placeholder="例 1"></label>
+        <label>測定時間<select name="sec"><option value="30">30秒</option><option value="45">45秒</option><option value="60">60秒</option></select></label>
+        <label>iPhoneの設置場所<input name="iphPlace" placeholder="例 事務所デスク"></label>
+        <label>Androidの設置場所<input name="andPlace" placeholder="例 事務所デスク"></label>
+        <label>iPhoneの高さ (m)<input name="iphH" type="number" inputmode="decimal" step="0.1" min="0" placeholder="例 0.5"></label>
+        <label>Androidの高さ (m)<input name="andH" type="number" inputmode="decimal" step="0.1" min="0" placeholder="例 0.5"></label>
+        <label>iPhoneの向き<select name="iphDir"><option>縦</option><option>横</option></select></label>
+        <label>Androidの向き<select name="andDir"><option>縦</option><option>横</option></select></label>
+        <label>障害物<input name="obst" placeholder="例 無し・机・壁" list="recObstList"></label>
+        <label>備考<input name="note" placeholder="特記事項"></label>
+        <datalist id="recObstList"><option value="無し"><option value="机"><option value="壁"><option value="ガラス"><option value="人"></datalist>
+      </form>
+      <p class="sub" id="recStatus"></p>
+      <div class="row-btns">
+        <button class="btn small" id="recStart">記録を始める</button>
+        <button class="btn small ghost" id="recStop" hidden>中止</button>
+      </div>
+      <div class="plist reclist" id="recList"></div>
+      <div class="row-btns">
+        <button class="btn small ghost" id="recExport" hidden>結果を書き出す（CSV）</button>
+        <button class="btn small ghost" id="recExportRaw" hidden>生データを書き出す（CSV）</button>
+        <button class="btn small ghost" id="recClear" hidden>記録をすべて消す</button>
+      </div>
+      <p class="sub">記録中は 0.5 秒ごとに、受信中のビーコンの RSSI（アプリが距離に使う直近4秒の平均）・最新の受信値・推定距離・推定位置を保存します。「結果を書き出す」は測定結果一覧（Excel）と同じ列の順番なので、そのまま貼り付けられます。記録は端末に保存され、消すまで残ります。</p>
+    </div>
     <div class="card">
       <h3>距離の推定</h3>
       <label class="slider">減衰係数 n <b id="nVal">4.0</b>

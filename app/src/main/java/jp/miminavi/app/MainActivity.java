@@ -48,6 +48,7 @@ public class MainActivity extends Activity implements BeaconScanner.Listener, Se
     private static final int REQ_PERMS = 1;
     private static final int REQ_BT = 2;
     private static final int REQ_SPEECH = 3;
+    private static final int REQ_EXPORT = 4;
     private static final String PREFS = "miminavi";
 
     private WebView web;
@@ -60,6 +61,8 @@ public class MainActivity extends Activity implements BeaconScanner.Listener, Se
     private boolean started = false;   // 画面が表示中か
     private boolean wantScan = false;  // JS 側からスキャン開始を要求されたか
     private String lastError = "";
+    private String pendingExport = null;      // 書き出し待ちの内容（保存先の選択中）
+    private String pendingExportName = null;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -254,6 +257,32 @@ public class MainActivity extends Activity implements BeaconScanner.Listener, Se
                 if (list != null) for (String t : list) arr.put(t);
             }
             js("speech", arr.toString());
+        } else if (requestCode == REQ_EXPORT) {
+            String content = pendingExport, name = pendingExportName;
+            pendingExport = null;
+            pendingExportName = null;
+            boolean ok = false;
+            String error = "";
+            if (resultCode == RESULT_OK && data != null && data.getData() != null && content != null) {
+                try (java.io.OutputStream out = getContentResolver().openOutputStream(data.getData(), "wt")) {
+                    if (out == null) throw new java.io.IOException("保存先を開けませんでした");
+                    // Excel で文字化けしないよう、UTF-8 の BOM を付ける
+                    out.write(new byte[]{(byte) 0xEF, (byte) 0xBB, (byte) 0xBF});
+                    out.write(content.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    ok = true;
+                } catch (Exception e) {
+                    error = e.getMessage() == null ? "保存できませんでした" : e.getMessage();
+                }
+            } else {
+                error = "キャンセルしました";
+            }
+            try {
+                JSONObject o = new JSONObject();
+                o.put("ok", ok);
+                o.put("name", name == null ? "" : name);
+                o.put("error", error);
+                js("exported", o.toString());
+            } catch (Exception ignored) { }
         }
     }
 
@@ -369,6 +398,46 @@ public class MainActivity extends Activity implements BeaconScanner.Listener, Se
         public void save(String json) {
             SharedPreferences.Editor e = getSharedPreferences(PREFS, MODE_PRIVATE).edit();
             e.putString("data", json).apply();
+        }
+
+        /** 測定記録など、設定とは別に保存するデータ */
+        @JavascriptInterface
+        public String loadItem(String key) {
+            return getSharedPreferences(PREFS, MODE_PRIVATE).getString("item:" + key, "");
+        }
+
+        @JavascriptInterface
+        public void saveItem(String key, String value) {
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString("item:" + key, value).apply();
+        }
+
+        @JavascriptInterface
+        public String appVersion() {
+            try {
+                return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+            } catch (Exception e) {
+                return "";
+            }
+        }
+
+        /** CSV を書き出す。保存先（端末内・Google ドライブなど）は利用者が選ぶ。結果は exported で通知 */
+        @JavascriptInterface
+        public void exportFile(String name, String content) {
+            runOnUiThread(() -> {
+                pendingExport = content;
+                pendingExportName = name;
+                Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                i.addCategory(Intent.CATEGORY_OPENABLE);
+                i.setType("text/csv");
+                i.putExtra(Intent.EXTRA_TITLE, name);
+                try {
+                    startActivityForResult(i, REQ_EXPORT);
+                } catch (ActivityNotFoundException e) {
+                    pendingExport = null;
+                    pendingExportName = null;
+                    js("exported", "{\"ok\":false,\"name\":\"\",\"error\":\"保存先を選ぶ画面を開けませんでした\"}");
+                }
+            });
         }
 
         @JavascriptInterface

@@ -2,7 +2,7 @@
  * 地図は map.js（tools/drawio_to_map.py が draw.io から自動生成）の window.MIMI_MAP を使う。
  * ネイティブ側（MainActivity.java）とのやりとり：
  *   JS → ネイティブ : window.MimiNative.startScan() / speak() / listen() / save() など
- *   ネイティブ → JS : window.__native(type, data)  type = beacons | status | heading | speech
+ *   ネイティブ → JS : window.__native(type, data)  type = beacons | status | heading | speech | exported
  * PC のブラウザで開いた場合は、疑似ビーコンで画面の動きを確認できる。
  */
 (() => {
@@ -171,6 +171,7 @@ window.__native = (type, d) => {
   else if (type === 'status') { st.status = d; renderStatus(); }
   else if (type === 'heading') onHeading(d);
   else if (type === 'speech') onSpeech(d);
+  else if (type === 'exported') onExported(d);
 };
 // 使う UUID（複数可）。空ならすべてのビーコン。登録外のビーコンは一覧にも位置の計算にも使わない
 const uuidInList = (u, list) => list.includes(normUuid(u));
@@ -197,6 +198,7 @@ function onBeacons(d) {
   st.others = d.others || 0;
   st.scanning = !!d.scanning;
   estimate();
+  recTick();
   renderChip();
   if (st.view === 'home') renderHomeKpi();
   if (st.view === 'beacons') renderBeacons();
@@ -955,6 +957,7 @@ function renderBeacons() {
   warn.hidden = !w; warn.textContent = w;
   $('nRange').value = st.data.n; $('nVal').textContent = Number(st.data.n).toFixed(1);
   renderUuidCard();
+  renderRecTargets();
 
   const sorted = [...(st.browse ? st.raw : st.beacons)].sort((a, b) => b.rssi - a.rssi);
   if (!sorted.length) {
@@ -1080,6 +1083,202 @@ $('uuidBrowse').onclick = () => { st.browse = !st.browse; applyNativeFilter(); r
 $('uuidClear').onclick = () => { setUuids([]); say('すべてのビーコンを使います。'); };
 $('nRange').addEventListener('input', e => { st.data.n = Number(e.target.value); $('nVal').textContent = st.data.n.toFixed(1); save(); });
 
+// ------------------------------------------------------------ 測定の記録（ビーコンタブ）
+// 記録中は 0.5 秒ごと（ビーコンの通知ごと）に、受信中のビーコンの値と推定位置を保存する。
+// 「結果を書き出す」は測定結果一覧（Excel）と同じ列の順番の CSV、「生データ」は 0.5 秒ごとの全記録。
+const REC_KEY = 'records';
+const REC_FIELDS = ['target', 'dist', 'sec', 'iphPlace', 'andPlace', 'iphH', 'andH', 'iphDir', 'andDir', 'obst', 'note'];
+const rec = { list: [], form: { sec: '30', iphDir: '縦', andDir: '縦', obst: '無し' }, cur: null, seq: 0 };
+function recLoad() {
+  try {
+    const raw = N && N.loadItem ? N.loadItem(REC_KEY) : localStorage.getItem('miminavi-' + REC_KEY);
+    if (!raw) return;
+    const d = JSON.parse(raw);
+    if (Array.isArray(d.list)) rec.list = d.list;
+    if (d.form && typeof d.form === 'object') Object.assign(rec.form, d.form);
+    rec.seq = typeof d.seq === 'number' ? d.seq : rec.list.reduce((m, r) => Math.max(m, r.no || 0), 0);
+  } catch (e) { /* 初回など */ }
+}
+function recSave() {
+  const s = JSON.stringify({ list: rec.list, form: rec.form, seq: rec.seq });
+  try { if (N && N.saveItem) N.saveItem(REC_KEY, s); else localStorage.setItem('miminavi-' + REC_KEY, s); } catch (e) { }
+}
+const pad2 = v => String(v).padStart(2, '0');
+const fmtTime = t => { const d = new Date(t); return `${d.getFullYear()}/${pad2(d.getMonth() + 1)}/${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`; };
+const r1 = v => Math.round(v * 10) / 10, r2 = v => Math.round(v * 100) / 100;
+const numOrNull = v => { const x = parseFloat(String(v == null ? '' : v).replace(',', '.')); return isFinite(x) ? x : null; };
+const stats = a => a.length ? { min: Math.min(...a), max: Math.max(...a), avg: a.reduce((x, y) => x + y, 0) / a.length } : null;
+function recReadForm() {
+  const f = $('recForm');
+  REC_FIELDS.forEach(k => { if (f.elements[k]) rec.form[k] = f.elements[k].value.trim(); });
+}
+function recFillForm() {
+  const f = $('recForm');
+  REC_FIELDS.forEach(k => { if (f.elements[k] && k !== 'target' && rec.form[k] != null) f.elements[k].value = rec.form[k]; });
+}
+// 対象のビーコンの選択肢（受信中で図面に対応しているもの＋選択中のもの）
+function renderRecTargets() {
+  const sel = $('recTarget'); if (document.activeElement === sel) return;
+  const labels = [...new Set([...seenByLabel().keys(), rec.form.target].filter(Boolean))].sort();
+  const opts = `<option value="">受信中のすべて</option>` + labels.map(l => `<option value="${esc(l)}">${esc(l)}</option>`).join('');
+  if (sel.dataset.sig !== opts) { sel.innerHTML = opts; sel.dataset.sig = opts; }
+  sel.value = rec.form.target || '';
+}
+const recLabelOf = b => { const mb = beaconOf(b); return mb ? mb.label : `Minor ${b.minor}`; };
+function recStart() {
+  if (rec.cur) return;
+  recReadForm();
+  const sec = Number(rec.form.sec) || 30;
+  const now = Date.now();
+  rec.cur = { startedAt: now, until: now + sec * 1000, sec, form: { ...rec.form }, n: st.data.n, ticks: [], lastCount: {} };
+  recSave();
+  if (N) N.keepScreenOn(true);
+  say(`記録を始めます。${sec}秒です。端末を動かさないでください。`);
+  renderRec();
+}
+function recStop(save) {
+  const cur = rec.cur; if (!cur) return;
+  rec.cur = null;
+  if (N && !st.nav) N.keepScreenOn(false);
+  if (save) {
+    const r = recBuild(cur);
+    if (r.beacons.length) {
+      rec.list.push(r); recSave();
+      const top = r.beacons[0];
+      say(`記録しました。${top.label}、RSSIの平均は${Math.round(top.rssi.avg)}、推定距離は${top.dist.avg.toFixed(1)}メートルです。`);
+    } else say('ビーコンを受信できなかったため、記録しませんでした。');
+  } else say('記録を中止しました。');
+  renderRec();
+}
+// 0.5 秒ごとの記録
+function recTick() {
+  const cur = rec.cur; if (!cur) return;
+  const now = Date.now();
+  const tick = { t: now - cur.startedAt, pos: st.pos ? [r2(st.pos.x), r2(st.pos.y)] : null, method: st.pos ? st.pos.method : '', room: st.room ? st.room.name : '', b: [] };
+  st.beacons.forEach(b => {
+    if (b.ageMs > 5000) return;
+    const label = recLabelOf(b);
+    if (cur.form.target && label !== cur.form.target) return;
+    const mb = beaconOf(b);
+    const A = mb ? txOf(mb.label) : DEFAULT_A;
+    const d = mb ? distanceOf(b, mb.label) : Math.min(30, Math.max(0.1, Math.pow(10, (A - b.rssi) / (10 * cur.n))));
+    const fresh = cur.lastCount[b.key] !== b.count;   // 前回から新しい受信があったか
+    cur.lastCount[b.key] = b.count;
+    tick.b.push({ label, minor: b.minor, rssi: r1(b.rssi), last: b.rssiLast, fresh, d: r2(d), A, cal: !!mb && typeof st.data.tx[mb.label] === 'number' });
+  });
+  cur.ticks.push(tick);
+  if (now >= cur.until) recStop(true);
+  else renderRecStatus();
+}
+// 記録をビーコンごとにまとめる
+function recBuild(cur) {
+  const by = new Map();
+  cur.ticks.forEach(tk => tk.b.forEach(x => {
+    if (!by.has(x.label)) by.set(x.label, { label: x.label, minor: x.minor, A: x.A, cal: x.cal, rssi: [], d: [], raw: [] });
+    const g = by.get(x.label);
+    g.rssi.push(x.rssi); g.d.push(x.d);
+    if (x.fresh) g.raw.push(x.last);
+  }));
+  const beacons = [...by.values()].map(g => ({
+    label: g.label, minor: g.minor, A: g.A, cal: g.cal, samples: g.rssi.length, received: g.raw.length,
+    rssi: stats(g.rssi), dist: stats(g.d), raw: stats(g.raw),
+  })).sort((a, b) => b.rssi.avg - a.rssi.avg);
+  const f = cur.form;
+  const same = rec.list.filter(r => ['dist', 'iphPlace', 'andPlace', 'iphH', 'andH', 'iphDir', 'andDir', 'obst'].every(k => (r.form[k] || '') === (f[k] || ''))).length;
+  rec.seq++;
+  return {
+    no: rec.seq, at: cur.startedAt, sec: r1((Math.min(Date.now(), cur.until) - cur.startedAt) / 1000), form: f, n: cur.n, round: same + 1,
+    model: st.status && st.status.model ? st.status.model : '', ver: N && N.appVersion ? N.appVersion() : 'PC',
+    beacons, ticks: cur.ticks,
+  };
+}
+function renderRecStatus() {
+  const el = $('recStatus');
+  el.classList.toggle('on', !!rec.cur);
+  if (rec.cur) {
+    const left = Math.max(0, Math.ceil((rec.cur.until - Date.now()) / 1000));
+    const labels = new Set(); rec.cur.ticks.forEach(t => t.b.forEach(x => labels.add(x.label)));
+    el.textContent = `● 記録中　残り ${left} 秒　${rec.cur.ticks.length} 回分・ビーコン ${labels.size} 台`;
+  } else el.textContent = rec.list.length ? `記録 ${rec.list.length} 件（ビーコンごとの結果 ${rec.list.reduce((a, r) => a + r.beacons.length, 0)} 行）` : 'まだ記録はありません。条件を入れて「記録を始める」を押してください。';
+}
+function renderRec() {
+  $('recForm').classList.toggle('busy', !!rec.cur);
+  $('recStart').hidden = !!rec.cur;
+  $('recStop').hidden = !rec.cur;
+  $('nRange').disabled = !!rec.cur;   // 記録中は n を変えない
+  const has = rec.list.length > 0 && !rec.cur;
+  ['recExport', 'recExportRaw', 'recClear'].forEach(id => { $(id).hidden = !has; });
+  renderRecStatus();
+  renderRecTargets();
+  $('recList').innerHTML = rec.list.slice().reverse().map(r => {
+    const f = r.form, dist = numOrNull(f.dist);
+    const lines = r.beacons.map(b => {
+      const err = dist == null ? '' : `　誤差 ${(b.dist.avg - dist >= 0 ? '+' : '')}${(b.dist.avg - dist).toFixed(2)}m`;
+      return `<span>${esc(b.label)}：RSSI ${b.rssi.avg.toFixed(1)}（${b.rssi.min}〜${b.rssi.max}）／距離 ${b.dist.avg.toFixed(2)}m${err}</span>`;
+    }).join('');
+    return `<div class="prow"><div class="rtxt"><b>No.${r.no}</b>　${esc(fmtTime(r.at))}　${dist == null ? '距離未入力' : dist + 'm'}・${esc(f.iphDir || '')}/${esc(f.andDir || '')}・${esc(f.obst || '')}・${r.round}回目${lines}</div><button class="iconbtn" data-del-rec="${r.no}">消す</button></div>`;
+  }).join('');
+}
+// ---- CSV
+const csvCell = v => { if (v == null) return ''; const s = String(v); return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+const csvOf = rows => rows.map(r => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
+const REC_HEAD = ['項番', '測定日時', '測定回', 'iPhone設置場所', 'Android設置場所', '実際の距離(m)', 'iPhoneの高さ(m)', 'Androidの高さ(m)', 'iPhoneの向き', 'Androidの向き', '障害物',
+  '減衰係数', '1m地点の値(dBm)', '1m値の種別', '対象ビーコン', 'RSSI最小値', 'RSSI平均値', 'RSSI最大値', '推定距離最小値', '推定距離平均値', '推定距離最大値', '測定時間(秒)', 'サンプル数',
+  '距離誤差', '絶対誤差', '誤差率(%)', '備考', '生RSSI最小値', '生RSSI平均値', '生RSSI最大値', '受信回数', '受信端末', 'アプリ版', '記録No'];
+function recSummaryCsv() {
+  const rows = [REC_HEAD];
+  rec.list.forEach(r => r.beacons.forEach(b => {
+    const f = r.form, dist = numOrNull(f.dist);
+    const err = dist == null ? null : r2(b.dist.avg - dist);
+    rows.push([rows.length, fmtTime(r.at), r.round, f.iphPlace, f.andPlace, dist, numOrNull(f.iphH), numOrNull(f.andH), f.iphDir, f.andDir, f.obst,
+      r.n, b.A, b.cal ? '補正' : '標準', b.label, b.rssi.min, r1(b.rssi.avg), b.rssi.max, b.dist.min, r2(b.dist.avg), b.dist.max, r.sec, b.samples,
+      err, err == null ? null : Math.abs(err), err == null || !dist ? null : r1(Math.abs(err) / dist * 100), f.note,
+      b.raw ? b.raw.min : null, b.raw ? r1(b.raw.avg) : null, b.raw ? b.raw.max : null, b.received, r.model, r.ver, r.no]);
+  }));
+  return csvOf(rows);
+}
+function recRawCsv() {
+  const rows = [['記録No', '測定日時', '経過(秒)', '対象ビーコン', 'Minor', 'RSSI(平均)', 'RSSI(最新の受信値)', '新しい受信', '推定距離(m)', '1m地点の値(dBm)', '減衰係数', '実際の距離(m)', '推定位置X(m)', '推定位置Y(m)', '測位方式', '今いる部屋']];
+  rec.list.forEach(r => r.ticks.forEach(tk => tk.b.forEach(x => {
+    rows.push([r.no, fmtTime(r.at + tk.t), r1(tk.t / 1000), x.label, x.minor, x.rssi, x.last, x.fresh ? 1 : 0, x.d, x.A, r.n, numOrNull(r.form.dist),
+      tk.pos ? tk.pos[0] : null, tk.pos ? tk.pos[1] : null, tk.method, tk.room]);
+  })));
+  return csvOf(rows);
+}
+function recExport(kind) {
+  const d = new Date(), stamp = `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}-${pad2(d.getHours())}${pad2(d.getMinutes())}`;
+  const name = `miminavi_${kind === 'raw' ? '生データ' : '測定結果'}_${stamp}.csv`;
+  const csv = kind === 'raw' ? recRawCsv() : recSummaryCsv();
+  if (N && N.exportFile) { N.exportFile(name, csv); return; }
+  // PC ブラウザ：ダウンロード（Excel で文字化けしないよう BOM 付き）
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob(['﻿' + csv], { type: 'text/csv' }));
+  a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+function onExported(d) {
+  if (d && d.ok) say('書き出しました。');
+  else if (d && d.error && d.error !== 'キャンセルしました') say('書き出せませんでした。' + d.error);
+}
+// ビーコンの通知が止まっても、時間になったら記録を終える
+setInterval(() => { if (!rec.cur) return; if (Date.now() >= rec.cur.until) recStop(true); else renderRecStatus(); }, 1000);
+$('recForm').addEventListener('change', () => { recReadForm(); recSave(); });
+$('recForm').addEventListener('submit', e => e.preventDefault());
+$('recStart').onclick = recStart;
+$('recStop').onclick = () => recStop(false);
+$('recExport').onclick = () => recExport('summary');
+$('recExportRaw').onclick = () => recExport('raw');
+$('recClear').onclick = () => {
+  if (!confirm(`記録 ${rec.list.length} 件をすべて消します。書き出していない記録は戻せません。よろしいですか？`)) return;
+  rec.list = []; rec.seq = 0; recSave(); renderRec();
+};
+$('recList').addEventListener('click', e => {
+  const b = e.target.closest('[data-del-rec]'); if (!b) return;
+  const no = Number(b.dataset.delRec);
+  if (!confirm(`No.${no} の記録を消します。よろしいですか？`)) return;
+  rec.list = rec.list.filter(r => r.no !== no); recSave(); renderRec();
+});
+
 // ------------------------------------------------------------ PC ブラウザ用の疑似データ（受付付近に立っている想定）
 function startMock() {
   st.status = { permission: true, bluetooth: true, location: true, scanning: true, tts: true, error: '', model: 'PC ブラウザ（疑似データ）' };
@@ -1099,6 +1298,9 @@ function startMock() {
 
 // ------------------------------------------------------------ 起動
 load();
+recLoad();
+recFillForm();
+renderRec();
 show('home');
 if (MAP.warnings && MAP.warnings.length) console.warn('地図データの注意:', MAP.warnings);
 if (N) {
@@ -1109,5 +1311,5 @@ if (N) {
   startMock();
 }
 // テスト用
-window.__mimi = { route, segments, matchDest, DESTS, ENTRY, st, startNav, doorsOnPath, atDest, roomAt, estimate };
+window.__mimi = { route, segments, matchDest, DESTS, ENTRY, st, startNav, doorsOnPath, atDest, roomAt, estimate, rec };
 })();
