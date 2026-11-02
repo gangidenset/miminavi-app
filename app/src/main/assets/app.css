@@ -182,3 +182,6 @@ button:focus-visible,input:focus-visible{outline:3px solid var(--coral);outline-
 .recper .perrow1 b{font-family:var(--f-mono);font-weight:500;font-size:12px}
 .recper .perrow1 .perplace{margin-left:0}
 .recper .perplace .iconbtn{padding:4px 8px;font-size:11px}
+.hrow{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+.hrow label{display:flex;flex-direction:column;gap:2px;font-size:11.5px;color:var(--muted)}
+.hrow input{border:1.5px solid var(--line);border-radius:10px;padding:6px 8px;background:var(--surface);color:var(--ink);font:inherit;font-size:13px;width:100%}

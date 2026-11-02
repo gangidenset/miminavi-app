@@ -101,7 +101,7 @@ const st = {
   view: 'home', tab: 'guide', sound: true,
   status: null, beacons: [], others: 0, scanning: false,
   heading: null, pos: null, nav: null, room: null, roomCand: null, roomCandN: 0,
-  data: { v: 2, n: 4.0, tx: {}, northOffset: null, assign: {}, uuids: [], moved: {} },
+  data: { v: 2, n: 4.0, tx: {}, northOffset: null, assign: {}, uuids: [], moved: {}, beaconH: '', phoneH: '' },
   browse: false, raw: [],
   placing: null,
 };
@@ -116,6 +116,8 @@ function load() {
       if (typeof d.northOffset === 'number') st.data.northOffset = d.northOffset;
       if (d.assign && typeof d.assign === 'object') st.data.assign = d.assign;
       if (d.moved && typeof d.moved === 'object') st.data.moved = d.moved;
+      if (d.beaconH != null) st.data.beaconH = String(d.beaconH);
+      if (d.phoneH != null) st.data.phoneH = String(d.phoneH);
       if (Array.isArray(d.uuids)) st.data.uuids = d.uuids.map(normUuid).filter(Boolean);
       else if (typeof d.uuid === 'string' && d.uuid) st.data.uuids = [normUuid(d.uuid)];   // 旧形式（1つだけ）から移行
     }
@@ -253,9 +255,28 @@ function seenByLabel() {
     if (b.ageMs > 5000) return;
     const mb = beaconOf(b); if (!mb) return;
     const cur = m.get(mb.label);
-    if (!cur || b.rssi > cur.b.rssi) m.set(mb.label, { b, mb, d: distanceOf(b, mb.label) });
+    const ds = distanceOf(b, mb.label);   // 空間の（斜めの）距離
+    if (!cur || b.rssi > cur.b.rssi) m.set(mb.label, { b, mb, ds, d: floorDist(ds, mb.label) });
   });
   return m;
+}
+// 高さの補正：推定距離は空間の斜めの距離。現在地は床の上（平面）で求めるので、ビーコンとスマホの高さの差を除いた
+// 床の上の距離 √(d² − 高さの差²) を使う。高さはビーコンタブの設定。測定の記録中は、記録の条件
+// （ビーコンごとの iPhone の高さ・Android の高さ）を優先する。どちらかの高さが空欄なら補正しない
+function heightDiff(label) {
+  const num = v => { const x = parseFloat(String(v == null ? '' : v).replace(',', '.')); return isFinite(x) ? x : null; };
+  let bh = num(st.data.beaconH), ph = num(st.data.phoneH);
+  const c = rec.cur;
+  if (c) {
+    const e = recEff(c.form, label);
+    if (num(e.h) != null) bh = num(e.h);
+    if (num(c.form.andH) != null) ph = num(c.form.andH);
+  }
+  return bh != null && ph != null ? Math.abs(bh - ph) : 0;
+}
+function floorDist(d, label) {
+  const dh = heightDiff(label);
+  return dh ? Math.max(0.1, Math.sqrt(Math.max(0, d * d - dh * dh))) : d;
 }
 // 1m地点の強さで補正した電波の強さ（大きいほど近い）
 const strength = u => u.b.rssi - txOf(u.mb.label);
@@ -932,7 +953,7 @@ function renderPlan(full) {
   $('planPos').textContent = st.pos
     ? `x ${st.pos.x.toFixed(1)}m, y ${st.pos.y.toFixed(1)}m（${placeName([st.pos.x, st.pos.y])}付近・誤差 約${st.pos.acc.toFixed(1)}m）${st.room ? `／部屋：${roomName(st.room.name)}` : ''}`
     : '—（図面のビーコンを受信していません）';
-  $('planUsed').textContent = st.pos ? `${st.pos.method}：` + st.pos.used.map(u => `${u.mb.label} ${u.d.toFixed(1)}m`).join(' / ') : '—';
+  $('planUsed').textContent = st.pos ? `${st.pos.method}：` + st.pos.used.map(u => `${u.mb.label} ${u.d.toFixed(1)}m`).join(' / ') + (st.pos.used.some(u => Math.abs(u.d - u.ds) > 0.005) ? '（高さ補正後の床の上の距離）' : '') : '—';
   const seen = seenByLabel();
   $('placingBar').hidden = !st.placing;
   if (st.placing) { $('placingName').textContent = st.placing.label; $('placingText').textContent = st.placing.rec ? 'を図面上でタップ' : 'を置いた場所を図面上でタップ'; }
@@ -1034,6 +1055,9 @@ function renderBeacons() {
   else if (!st.scanning && N) w = 'スキャンが止まっています。ホームの「スキャン開始」を押してください。';
   warn.hidden = !w; warn.textContent = w;
   $('nRange').value = st.data.n; $('nVal').textContent = Number(st.data.n).toFixed(1);
+  if (document.activeElement !== $('hBeacon')) $('hBeacon').value = st.data.beaconH;
+  if (document.activeElement !== $('hPhone')) $('hPhone').value = st.data.phoneH;
+  renderHeightNote();
   renderUuidCard();
   renderRecTargets();
   renderRecPos();
@@ -1162,6 +1186,17 @@ $('uuidInput').addEventListener('input', () => $('uuidInput').setCustomValidity(
 $('uuidBrowse').onclick = () => { st.browse = !st.browse; applyNativeFilter(); renderBeacons(); };
 $('uuidClear').onclick = () => { setUuids([]); say('すべてのビーコンを使います。'); };
 $('nRange').addEventListener('input', e => { st.data.n = Number(e.target.value); $('nVal').textContent = st.data.n.toFixed(1); save(); });
+// 高さの補正の設定
+['hBeacon', 'hPhone'].forEach(id => $(id).addEventListener('change', () => {
+  st.data.beaconH = $('hBeacon').value.trim(); st.data.phoneH = $('hPhone').value.trim();
+  save(); estimate(); renderHeightNote();
+}));
+function renderHeightNote() {
+  const on = st.data.beaconH !== '' && st.data.phoneH !== '';
+  $('hNote').textContent = on
+    ? `補正中：高さの差 ${Math.abs(parseFloat(st.data.beaconH) - parseFloat(st.data.phoneH)).toFixed(2)}m を除いた床の上の距離で現在地を計算します。`
+    : '両方入れると、高さの差を除いた床の上の距離で現在地を計算します（空欄なら補正しない）。';
+}
 
 // ------------------------------------------------------------ 測定の記録（ビーコンタブ）
 // 記録中は 0.5 秒ごと（ビーコンの通知ごと）に、受信中のビーコンの値と推定位置を保存する。
