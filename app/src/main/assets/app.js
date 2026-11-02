@@ -1008,6 +1008,7 @@ function renderBeacons() {
   renderUuidCard();
   renderRecTargets();
   renderRecPos();
+  renderRecPer();
 
   const sorted = [...(st.browse ? st.raw : st.beacons)].sort((a, b) => b.rssi - a.rssi);
   if (!sorted.length) {
@@ -1137,8 +1138,8 @@ $('nRange').addEventListener('input', e => { st.data.n = Number(e.target.value);
 // 記録中は 0.5 秒ごと（ビーコンの通知ごと）に、受信中のビーコンの値と推定位置を保存する。
 // 「結果を書き出す」は測定結果一覧（Excel）と同じ列の順番の CSV、「生データ」は 0.5 秒ごとの全記録。
 const REC_KEY = 'records';
-const REC_FIELDS = ['target', 'andPos', 'dist', 'sec', 'iphPlace', 'andPlace', 'iphH', 'andH', 'iphDir', 'andDir', 'obst', 'note'];
-const rec = { list: [], form: { sec: '30', iphDir: '縦', andDir: '縦', obst: '無し' }, cur: null, seq: 0 };
+const REC_FIELDS = ['target', 'andPos', 'dist', 'sec', 'reps', 'iphPlace', 'andPlace', 'iphH', 'andH', 'iphDir', 'andDir', 'obst', 'note'];
+const rec = { list: [], form: { sec: '30', reps: '1', iphDir: '縦', andDir: '縦', obst: '無し', per: {} }, cur: null, next: null, seq: 0 };
 function recLoad() {
   try {
     const raw = N && N.loadItem ? N.loadItem(REC_KEY) : localStorage.getItem('miminavi-' + REC_KEY);
@@ -1146,6 +1147,7 @@ function recLoad() {
     const d = JSON.parse(raw);
     if (Array.isArray(d.list)) rec.list = d.list;
     if (d.form && typeof d.form === 'object') Object.assign(rec.form, d.form);
+    if (!rec.form.per || typeof rec.form.per !== 'object') rec.form.per = {};
     rec.seq = typeof d.seq === 'number' ? d.seq : rec.list.reduce((m, r) => Math.max(m, r.no || 0), 0);
   } catch (e) { /* 初回など */ }
 }
@@ -1161,6 +1163,50 @@ const stats = a => a.length ? { min: Math.min(...a), max: Math.max(...a), avg: a
 function recReadForm() {
   const f = $('recForm');
   REC_FIELDS.forEach(k => { if (f.elements[k] && k !== 'andPos') rec.form[k] = f.elements[k].value.trim(); });
+  recReadPer();
+}
+// ビーコンごとの設定（空欄は共通の値を使う）
+function recReadPer() {
+  document.querySelectorAll('#recPer [data-k]').forEach(el => {
+    const l = el.dataset.label, k = el.dataset.k, v = el.value.trim();
+    const o = rec.form.per[l] || (rec.form.per[l] = {});
+    if (v) o[k] = v; else delete o[k];
+    if (!Object.keys(o).length) delete rec.form.per[l];
+  });
+}
+// ビーコンごとの実際の条件。「受信中のすべて」のときはビーコンごとの設定、空欄や1台だけのときは共通の値
+function recEff(form, label) {
+  const p = (!form.target && form.per && form.per[label]) || {};
+  const pick = (k, common) => (p[k] != null && p[k] !== '' ? p[k] : common);
+  return { dist: pick('dist', form.dist), dir: pick('dir', form.iphDir), h: pick('h', form.iphH), place: pick('place', form.iphPlace) };
+}
+// ビーコンごとの設定欄（受信中のビーコン＋設定済みのビーコン）
+function renderRecPer() {
+  const box = $('recPer'); if (!box) return;
+  const f = rec.form, pos = recPosOf(f);
+  box.hidden = !!f.target;
+  if (f.target) return;
+  if (box.contains(document.activeElement)) return;
+  const seen = new Set();
+  st.beacons.forEach(b => { if (b.ageMs <= 5000) seen.add(recLabelOf(b)); });
+  const labels = [...new Set([...seen, ...Object.keys(f.per || {})])].sort((a, b) => a.localeCompare(b, 'ja', { numeric: true }));
+  const sig = JSON.stringify([labels, [...seen], !!pos, ...[f.andPos, f.andAt, f.iphH, f.andH, f.dist, f.iphDir, f.iphPlace].map(x => x || '')]);
+  if (box.dataset.sig === sig) return;
+  recReadPer();   // 描き直す前に、入力途中の値を取りこむ
+  box.dataset.sig = sig;
+  if (!labels.length) { box.innerHTML = '<p class="sub">受信中のビーコンがここに並び、ビーコンごとに実際の距離・向き・高さ・設置場所を入れられます。</p>'; return; }
+  const v = (l, k) => esc(((f.per || {})[l] || {})[k] || '');
+  box.innerHTML = `<p class="pertitle">ビーコンごとの設定（iPhone ごとの条件）</p><div class="perhead"><span>ビーコン</span><span>実際の距離(m)</span><span>iPhoneの向き</span><span>高さ(m)</span><span>設置場所</span></div>` + labels.map(l => {
+    const auto = pos ? recTrueDist(f, pos.at, l) : null;
+    const distIn = pos
+      ? `<input disabled placeholder="${auto == null ? '—' : '自動 ' + auto.toFixed(1)}">`
+      : `<input data-label="${esc(l)}" data-k="dist" type="number" inputmode="decimal" step="0.1" min="0" value="${v(l, 'dist')}" placeholder="${esc(f.dist || '共通')}">`;
+    const dir = ((f.per || {})[l] || {}).dir || '';
+    return `<div class="perrow${seen.has(l) ? '' : ' off'}"><b>${esc(l)}</b>${distIn}
+      <select data-label="${esc(l)}" data-k="dir"><option value=""${dir ? '' : ' selected'}>共通（${esc(f.iphDir || '縦')}）</option><option${dir === '縦' ? ' selected' : ''}>縦</option><option${dir === '横' ? ' selected' : ''}>横</option></select>
+      <input data-label="${esc(l)}" data-k="h" type="number" inputmode="decimal" step="0.1" min="0" value="${v(l, 'h')}" placeholder="${esc(f.iphH || '共通')}">
+      <input data-label="${esc(l)}" data-k="place" value="${v(l, 'place')}" placeholder="${esc(f.iphPlace || '共通')}"></div>`;
+  }).join('') + `<p class="sub">空欄は上の共通の値を使います。灰色は今受信していないビーコン（前に入れた設定）です。</p>`;
 }
 // ミミナビの位置：B-xx（そのビーコンの図面上の位置）か、図面でタップした地点。指定すると実際の距離はビーコンごとに図面から計算する
 function recPosOf(form) {
@@ -1174,7 +1220,7 @@ function recPosOf(form) {
 function recTrueDist(form, at, label) {
   const mb = mapBeacons().find(b => b.label === label);
   if (!at || !mb) return null;
-  const h = dist(mb.at, at), ih = numOrNull(form.iphH), ah = numOrNull(form.andH);
+  const h = dist(mb.at, at), ih = numOrNull(recEff(form, label).h), ah = numOrNull(form.andH);
   return ih != null && ah != null ? Math.hypot(h, ih - ah) : h;
 }
 function renderRecPos() {
@@ -1217,30 +1263,45 @@ function renderRecTargets() {
   sel.value = rec.form.target || '';
 }
 const recLabelOf = b => { const mb = beaconOf(b); return mb ? mb.label : `Minor ${b.minor}`; };
-function recStart() {
+const REC_GAP_MS = 5000;   // 連続で記録するときの間
+function recStart(rep) {
   if (rec.cur) return;
-  recReadForm();
-  const sec = Number(rec.form.sec) || 30;
+  rep = typeof rep === 'number' ? rep : 1;
+  rec.next = null;
+  if (rep === 1) recReadForm();
+  const sec = Number(rec.form.sec) || 30, reps = Math.max(1, Number(rec.form.reps) || 1);
   const now = Date.now();
   const pos = recPosOf(rec.form);
-  rec.cur = { startedAt: now, until: now + sec * 1000, sec, form: { ...rec.form }, pos, n: st.data.n, ticks: [], lastCount: {} };
+  rec.cur = { startedAt: now, until: now + sec * 1000, sec, rep, reps, form: JSON.parse(JSON.stringify(rec.form)), pos, n: st.data.n, ticks: [], lastCount: {} };
   recSave();
   if (N) N.keepScreenOn(true);
-  say(`記録を始めます。${sec}秒です。端末を動かさないでください。`);
+  say(reps > 1 ? `${rep}回目の記録を始めます。${sec}秒です。` : `記録を始めます。${sec}秒です。端末を動かさないでください。`);
   renderRec();
 }
 function recStop(save) {
+  if (!rec.cur && rec.next) {   // 連続記録の待ち時間に中止
+    rec.next = null;
+    if (N && !st.nav) N.keepScreenOn(false);
+    say('連続の記録を中止しました。');
+    renderRec(); return;
+  }
   const cur = rec.cur; if (!cur) return;
   rec.cur = null;
-  if (N && !st.nav) N.keepScreenOn(false);
   if (save) {
     const r = recBuild(cur);
+    const more = cur.rep < cur.reps;
     if (r.beacons.length) {
       rec.list.push(r); recSave();
       const top = r.beacons[0];
-      say(`記録しました。${top.label}、RSSIの平均は${Math.round(top.rssi.avg)}、推定距離は${top.dist.avg.toFixed(1)}メートルです。`);
-    } else say('ビーコンを受信できなかったため、記録しませんでした。');
-  } else say('記録を中止しました。');
+      if (more) say(`${cur.rep}回目を記録しました。5秒後に${cur.rep + 1}回目を始めます。`);
+      else say(`${cur.reps > 1 ? `${cur.reps}回の記録が終わりました。最後の回は、` : '記録しました。'}${top.label}、RSSIの平均は${Math.round(top.rssi.avg)}、推定距離は${top.dist.avg.toFixed(1)}メートルです。`);
+    } else say(`ビーコンを受信できなかったため、記録しませんでした。${more ? '5秒後に次の回を始めます。' : ''}`);
+    if (more) rec.next = { at: Date.now() + REC_GAP_MS, rep: cur.rep + 1, reps: cur.reps };
+  } else {
+    rec.next = null;
+    say('記録を中止しました。');
+  }
+  if (N && !st.nav && !rec.next) N.keepScreenOn(false);
   renderRec();
 }
 // 0.5 秒ごとの記録
@@ -1275,14 +1336,16 @@ function recBuild(cur) {
   const beacons = [...by.values()].map(g => ({
     label: g.label, minor: g.minor, A: g.A, cal: g.cal, samples: g.rssi.length, received: g.raw.length,
     rssi: stats(g.rssi), dist: stats(g.d), raw: stats(g.raw),
-    trueD: cur.pos ? recTrueDist(cur.form, cur.pos.at, g.label) : numOrNull(cur.form.dist),
-  })).sort((a, b) => b.rssi.avg - a.rssi.avg);
+    trueD: cur.pos ? recTrueDist(cur.form, cur.pos.at, g.label) : numOrNull(recEff(cur.form, g.label).dist),
+    iphDir: recEff(cur.form, g.label).dir, iphH: numOrNull(recEff(cur.form, g.label).h), iphPlace: recEff(cur.form, g.label).place,
+  })).sort((a, b) => a.label.localeCompare(b.label, 'ja', { numeric: true }));
   // 推定位置の平均とずれ（表示位置＝案内ルートに寄せた位置、計算位置＝寄せる前）
   const avgPos = key => { const a = cur.ticks.map(t => t[key]).filter(Boolean); return a.length ? [a.reduce((s, p) => s + p[0], 0) / a.length, a.reduce((s, p) => s + p[1], 0) / a.length] : null; };
   const shown = avgPos('pos'), calc = avgPos('rawPos');
   const position = cur.pos ? { label: cur.pos.label, at: cur.pos.at, shown, calc, err: shown ? dist(shown, cur.pos.at) : null, errCalc: calc ? dist(calc, cur.pos.at) : null } : null;
   const f = cur.form;
-  const same = rec.list.filter(r => ['andPos', 'dist', 'iphPlace', 'andPlace', 'iphH', 'andH', 'iphDir', 'andDir', 'obst'].every(k => (r.form[k] || '') === (f[k] || ''))).length;
+  const perKey = form => form.target ? '' : JSON.stringify(Object.keys(form.per || {}).sort().map(k => [k, form.per[k]]));
+  const same = rec.list.filter(r => ['target', 'andPos', 'dist', 'iphPlace', 'andPlace', 'iphH', 'andH', 'iphDir', 'andDir', 'obst'].every(k => (r.form[k] || '') === (f[k] || '')) && perKey(r.form) === perKey(f)).length;
   rec.seq++;
   return {
     no: rec.seq, at: cur.startedAt, sec: r1((Math.min(Date.now(), cur.until) - cur.startedAt) / 1000), form: f, n: cur.n, round: same + 1,
@@ -1292,32 +1355,36 @@ function recBuild(cur) {
 }
 function renderRecStatus() {
   const el = $('recStatus');
-  el.classList.toggle('on', !!rec.cur);
+  el.classList.toggle('on', !!(rec.cur || rec.next));
   if (rec.cur) {
     const left = Math.max(0, Math.ceil((rec.cur.until - Date.now()) / 1000));
     const labels = new Set(); rec.cur.ticks.forEach(t => t.b.forEach(x => labels.add(x.label)));
-    el.textContent = `● 記録中　残り ${left} 秒　${rec.cur.ticks.length} 回分・ビーコン ${labels.size} 台`;
+    el.textContent = `● 記録中${rec.cur.reps > 1 ? `（${rec.cur.rep}/${rec.cur.reps}回目）` : ''}　残り ${left} 秒　${rec.cur.ticks.length} 回分・ビーコン ${labels.size} 台`;
+  } else if (rec.next) {
+    el.textContent = `● 次の記録まで ${Math.max(0, Math.ceil((rec.next.at - Date.now()) / 1000))} 秒（${rec.next.rep}/${rec.next.reps}回目）`;
   } else el.textContent = rec.list.length ? `記録 ${rec.list.length} 件（ビーコンごとの結果 ${rec.list.reduce((a, r) => a + r.beacons.length, 0)} 行）` : 'まだ記録はありません。条件を入れて「記録を始める」を押してください。';
 }
 function renderRec() {
-  $('recForm').classList.toggle('busy', !!rec.cur);
-  $('recStart').hidden = !!rec.cur;
-  $('recStop').hidden = !rec.cur;
-  $('nRange').disabled = !!rec.cur;   // 記録中は n を変えない
-  const has = rec.list.length > 0 && !rec.cur;
+  const busy = !!(rec.cur || rec.next);
+  $('recForm').classList.toggle('busy', busy);
+  $('recStart').hidden = busy;
+  $('recStop').hidden = !busy;
+  $('nRange').disabled = busy;   // 記録中は n を変えない
+  const has = rec.list.length > 0 && !busy;
   ['recExport', 'recExportRaw', 'recClear'].forEach(id => { $(id).hidden = !has; });
   renderRecStatus();
   renderRecTargets();
   renderRecPos();
+  renderRecPer();
   $('recList').innerHTML = rec.list.slice().reverse().map(r => {
     const f = r.form, dist = numOrNull(f.dist), P = r.position;
     const lines = r.beacons.map(b => {
       const td = b.trueD !== undefined ? b.trueD : dist;
-      const err = td == null ? '' : `${P ? `　実際 ${td.toFixed(1)}m` : ''}　誤差 ${(b.dist.avg - td >= 0 ? '+' : '')}${(b.dist.avg - td).toFixed(2)}m`;
-      return `<span>${esc(b.label)}：RSSI ${b.rssi.avg.toFixed(1)}（${b.rssi.min}〜${b.rssi.max}）／距離 ${b.dist.avg.toFixed(2)}m${err}</span>`;
+      const err = td == null ? '' : `　実際 ${td.toFixed(1)}m　誤差 ${(b.dist.avg - td >= 0 ? '+' : '')}${(b.dist.avg - td).toFixed(2)}m`;
+      return `<span>${esc(b.label)}${b.iphDir ? `（${esc(b.iphDir)}）` : ''}：RSSI ${b.rssi.avg.toFixed(1)}（${b.rssi.min}〜${b.rssi.max}）／距離 ${b.dist.avg.toFixed(2)}m${err}</span>`;
     }).join('') + (P && P.err != null ? `<span>位置のずれ ${P.err.toFixed(2)}m（計算位置 ${P.errCalc.toFixed(2)}m）</span>` : '');
-    const where = P ? `ミミナビ ${esc(P.label)}` : dist == null ? '距離未入力' : dist + 'm';
-    return `<div class="prow"><div class="rtxt"><b>No.${r.no}</b>　${esc(fmtTime(r.at))}　${where}・${esc(f.iphDir || '')}/${esc(f.andDir || '')}・${esc(f.obst || '')}・${r.round}回目${lines}</div><button class="iconbtn" data-del-rec="${r.no}">消す</button></div>`;
+    const where = P ? `ミミナビ ${esc(P.label)}` : r.beacons.length > 1 ? `${r.beacons.length}台` : dist == null ? '距離未入力' : dist + 'm';
+    return `<div class="prow"><div class="rtxt"><b>No.${r.no}</b>　${esc(fmtTime(r.at))}　${where}・Android ${esc(f.andDir || '')}・${esc(f.obst || '')}・${r.round}回目${lines}</div><button class="iconbtn" data-del-rec="${r.no}">消す</button></div>`;
   }).join('');
 }
 // ---- CSV
@@ -1333,7 +1400,9 @@ function recSummaryCsv() {
     const f = r.form, P = r.position;
     const dist = b.trueD !== undefined ? (b.trueD == null ? null : r2(b.trueD)) : numOrNull(f.dist);
     const err = dist == null ? null : r2(b.dist.avg - dist);
-    rows.push([rows.length, fmtTime(r.at), r.round, f.iphPlace, f.andPlace, dist, numOrNull(f.iphH), numOrNull(f.andH), f.iphDir, f.andDir, f.obst,
+    const has = k => b[k] !== undefined;   // 以前の記録にはビーコンごとの値がない
+    rows.push([rows.length, fmtTime(r.at), r.round, has('iphPlace') ? b.iphPlace : f.iphPlace, f.andPlace, dist, has('iphH') ? b.iphH : numOrNull(f.iphH), numOrNull(f.andH),
+      has('iphDir') ? b.iphDir : f.iphDir, f.andDir, f.obst,
       r.n, b.A, b.cal ? '補正' : '標準', b.label, b.rssi.min, r1(b.rssi.avg), b.rssi.max, b.dist.min, r2(b.dist.avg), b.dist.max, r.sec, b.samples,
       err, err == null ? null : Math.abs(err), err == null || !dist ? null : r1(Math.abs(err) / dist * 100), f.note,
       b.raw ? b.raw.min : null, b.raw ? r1(b.raw.avg) : null, b.raw ? b.raw.max : null, b.received, r.model, r.ver, r.no,
@@ -1345,7 +1414,7 @@ function recSummaryCsv() {
 function recRawCsv() {
   const rows = [['記録No', '測定日時', '経過(秒)', '対象ビーコン', 'Minor', 'RSSI(平均)', 'RSSI(最新の受信値)', '新しい受信', '推定距離(m)', '1m地点の値(dBm)', '減衰係数', '実際の距離(m)', '推定位置X(m)', '推定位置Y(m)', '測位方式', '今いる部屋', '計算位置X(m)', '計算位置Y(m)', 'ミミナビの位置', 'ミミナビX(m)', 'ミミナビY(m)']];
   rec.list.forEach(r => r.ticks.forEach(tk => tk.b.forEach(x => {
-    const P = r.position, td = P ? recTrueDist(r.form, P.at, x.label) : numOrNull(r.form.dist);
+    const P = r.position, td = P ? recTrueDist(r.form, P.at, x.label) : numOrNull(recEff(r.form, x.label).dist);
     rows.push([r.no, fmtTime(r.at + tk.t), r1(tk.t / 1000), x.label, x.minor, x.rssi, x.last, x.fresh ? 1 : 0, x.d, x.A, r.n, td == null ? null : r2(td),
       tk.pos ? tk.pos[0] : null, tk.pos ? tk.pos[1] : null, tk.method, tk.room, tk.rawPos ? tk.rawPos[0] : null, tk.rawPos ? tk.rawPos[1] : null,
       P ? P.label : null, P ? r2(P.at[0]) : null, P ? r2(P.at[1]) : null]);
@@ -1368,10 +1437,14 @@ function onExported(d) {
   else if (d && d.error && d.error !== 'キャンセルしました') say('書き出せませんでした。' + d.error);
 }
 // ビーコンの通知が止まっても、時間になったら記録を終える
-setInterval(() => { if (!rec.cur) return; if (Date.now() >= rec.cur.until) recStop(true); else renderRecStatus(); }, 1000);
-$('recForm').addEventListener('change', () => { recReadForm(); recSave(); });
+setInterval(() => {
+  if (rec.next && !rec.cur) { if (Date.now() >= rec.next.at) recStart(rec.next.rep); else renderRecStatus(); return; }
+  if (!rec.cur) return;
+  if (Date.now() >= rec.cur.until) recStop(true); else renderRecStatus();
+}, 1000);
+$('recForm').addEventListener('change', () => { recReadForm(); recSave(); renderRecPer(); });
 $('recForm').addEventListener('submit', e => e.preventDefault());
-$('recStart').onclick = recStart;
+$('recStart').onclick = () => recStart(1);
 $('recStop').onclick = () => recStop(false);
 $('recExport').onclick = () => recExport('summary');
 $('recExportRaw').onclick = () => recExport('raw');
