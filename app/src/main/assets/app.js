@@ -24,7 +24,12 @@ const [BX0, BY0, BX1, BY1] = MAP.bounds;
 const DIRS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
 const DNAME = ['図面の上', '図面の右', '図面の下', '図面の左'];
 const DESTS = MAP.dests;
-const BEACONS = MAP.beacons;        // [{label, minor, place, at}]
+// 図面のビーコン [{label, minor, place, at}]。図面タブで動かした B-xx は st.data.moved の位置を使う
+let BEACONS = MAP.beacons;
+function refreshBeacons() {
+  const moved = st.data.moved || {};
+  BEACONS = MAP.beacons.map(b => Array.isArray(moved[b.label]) ? { ...b, at: moved[b.label], place: placeName(moved[b.label]), moved: true, orig: b.at } : b);
+}
 const beaconPlace = b => b.place || placeName(b.at);
 const ENTRY = (MAP.doors.find(d => /入口/.test(d.name)) || {}).cell || DESTS[0].cell;
 
@@ -96,7 +101,7 @@ const st = {
   view: 'home', tab: 'guide', sound: true,
   status: null, beacons: [], others: 0, scanning: false,
   heading: null, pos: null, nav: null, room: null, roomCand: null, roomCandN: 0,
-  data: { v: 2, n: 4.0, tx: {}, northOffset: null, assign: {}, uuids: [] },
+  data: { v: 2, n: 4.0, tx: {}, northOffset: null, assign: {}, uuids: [], moved: {} },
   browse: false, raw: [],
   placing: null,
 };
@@ -110,6 +115,7 @@ function load() {
       if (d.tx && typeof d.tx === 'object') st.data.tx = d.tx;
       if (typeof d.northOffset === 'number') st.data.northOffset = d.northOffset;
       if (d.assign && typeof d.assign === 'object') st.data.assign = d.assign;
+      if (d.moved && typeof d.moved === 'object') st.data.moved = d.moved;
       if (Array.isArray(d.uuids)) st.data.uuids = d.uuids.map(normUuid).filter(Boolean);
       else if (typeof d.uuid === 'string' && d.uuid) st.data.uuids = [normUuid(d.uuid)];   // 旧形式（1つだけ）から移行
     }
@@ -486,6 +492,12 @@ function updateDyn(el) {
   mapBeacons().forEach(mb => {
     const hit = seen.get(mb.label);
     const [x, y] = mb.at;
+    // 動かしたビーコンは、図面の元の位置を点線の丸と線で示す
+    if (mb.moved && el.id === 'planMap') {
+      const [ox, oy] = mb.orig;
+      s += `<line x1="${ox * U}" y1="${oy * U}" x2="${x * U}" y2="${y * U}" stroke="var(--gray)" stroke-width="3" stroke-dasharray="8 6"/>`;
+      s += `<circle cx="${ox * U}" cy="${oy * U}" r="${5 * K}" fill="none" stroke="var(--gray)" stroke-width="3" stroke-dasharray="6 5"/>`;
+    }
     if (hit && usedSet.has(mb.label)) s += `<circle cx="${x * U}" cy="${y * U}" r="${Math.min(hit.d, 12) * U}" fill="none" stroke="var(--teal)" stroke-width="3" opacity=".35"/>`;
     s += `<circle cx="${x * U}" cy="${y * U}" r="${hit ? 6.5 * K : 5.5 * K}" fill="${hit ? 'var(--teal)' : 'var(--gray)'}"/>`;
     s += `<text x="${x * U}" y="${(y * U) - 9 * K}" text-anchor="middle" font-family="var(--f-mono)" font-size="24" fill="var(--ink)">${esc(mb.label)}</text>`;
@@ -923,12 +935,27 @@ function renderPlan(full) {
   $('placedList').innerHTML = all.map(b => {
     const h = seen.get(b.label);
     const how = b.custom ? '自分で配置' : h && h.mb.manual ? '手動で割り当て' : `Minor ${b.minor ?? '?'}`;
-    const del = b.custom ? `<button class="iconbtn" data-del="${esc(b.label)}">外す</button>` : '';
-    return `<div class="prow"><i class="lg ${h ? 'teal' : 'gray'}"></i><b class="${h ? '' : 'off'}">${esc(b.label)}</b><span class="grow">${esc(beaconPlace(b))}・${how}</span><span class="rem">${h ? `${Math.round(h.b.rssi)}dBm 約${h.d.toFixed(1)}m` : '未受信'}</span>${del}</div>`;
+    const del = b.custom ? `<button class="iconbtn" data-del="${esc(b.label)}">外す</button>`
+      : `<button class="iconbtn" data-move="${esc(b.label)}">動かす</button>${b.moved ? `<button class="iconbtn" data-unmove="${esc(b.label)}">元に戻す</button>` : ''}`;
+    return `<div class="prow"><i class="lg ${h ? 'teal' : 'gray'}"></i><b class="${h ? '' : 'off'}">${esc(b.label)}</b><span class="grow">${esc(beaconPlace(b))}${b.moved ? '（移動済み）' : ''}・${how}</span><span class="rem">${h ? `${Math.round(h.b.rssi)}dBm 約${h.d.toFixed(1)}m` : '未受信'}</span>${del}</div>`;
   }).join('');
 }
 
 $('placedList').addEventListener('click', e => {
+  const mv = e.target.closest('[data-move]');
+  if (mv) {
+    st.placing = { move: mv.dataset.move, label: mv.dataset.move };
+    renderPlan(true);
+    say(`${mv.dataset.move}を置いた場所を、図面の上でタップしてください。`);
+    return;
+  }
+  const um = e.target.closest('[data-unmove]');
+  if (um) {
+    delete st.data.moved[um.dataset.unmove];
+    refreshBeacons(); save(); estimate(); renderPlan(true);
+    say(`${um.dataset.unmove}を図面の元の位置に戻しました。`);
+    return;
+  }
   const b = e.target.closest('[data-del]'); if (!b) return;
   Object.keys(st.data.assign).forEach(k => { if (st.data.assign[k].label === b.dataset.del) delete st.data.assign[k]; });
   save(); estimate(); renderPlan(true);
@@ -940,6 +967,15 @@ $('planMap').addEventListener('click', e => {
   const q = pt.matrixTransform(svg.getScreenCTM().inverse());
   const at = [Math.round(q.x / U * 100) / 100, Math.round(q.y / U * 100) / 100];
   if (at[0] < BX0 || at[0] > BX1 || at[1] < BY0 || at[1] > BY1) return;
+  if (st.placing.move) {
+    const label = st.placing.move;
+    st.placing = null;
+    st.data.moved[label] = at;
+    refreshBeacons(); save(); estimate(); renderPlan(true);
+    if (st.view === 'beacons') renderBeacons();
+    say(`${label}を、${placeName(at)}に動かしました。`);
+    return;
+  }
   if (st.placing.rec) {
     st.placing = null;
     rec.form.andPos = '@map'; rec.form.andAt = at; recSave();
@@ -971,6 +1007,7 @@ function renderBeacons() {
   $('nRange').value = st.data.n; $('nVal').textContent = Number(st.data.n).toFixed(1);
   renderUuidCard();
   renderRecTargets();
+  renderRecPos();
 
   const sorted = [...(st.browse ? st.raw : st.beacons)].sort((a, b) => b.rssi - a.rssi);
   if (!sorted.length) {
@@ -1368,6 +1405,7 @@ function startMock() {
 
 // ------------------------------------------------------------ 起動
 load();
+refreshBeacons();
 recLoad();
 recFillForm();
 renderRec();
