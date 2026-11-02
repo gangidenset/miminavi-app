@@ -156,3 +156,17 @@ button:focus-visible,input:focus-visible{outline:3px solid var(--coral);outline-
 .prow .mono{font-family:var(--f-mono);font-size:11px;color:var(--ink);white-space:normal;word-break:break-all;overflow:visible}
 #uuidAdd{margin-top:8px}
 #uuidList:not(:empty){margin-bottom:6px}
+/* 測定の記録 */
+.recform{display:grid;grid-template-columns:1fr 1fr;gap:8px 10px;margin-bottom:8px}
+.recform label{display:flex;flex-direction:column;gap:2px;font-size:11.5px;color:var(--muted);min-width:0}
+.recform label.wide{grid-column:1 / -1}
+.recform input,.recform select{border:1.5px solid var(--line);border-radius:10px;padding:6px 8px;background:var(--surface);color:var(--ink);font:inherit;font-size:13px;min-width:0;width:100%}
+.recform:disabled,.recform.busy{opacity:.6;pointer-events:none}
+#recStatus{font-family:var(--f-mono)}
+#recStatus.on{color:var(--coral);font-weight:700}
+.reclist{margin-top:8px}
+.reclist:empty{display:none}
+.reclist .prow{align-items:flex-start;border-top:1px dashed var(--line);padding-top:6px}
+.reclist .rtxt{flex:1;min-width:0;font-size:12px;line-height:1.5}
+.reclist .rtxt b{font-family:var(--f-body);font-weight:700}
+.reclist .rtxt span{display:block;font-family:var(--f-mono);font-size:11.5px;color:var(--muted)}

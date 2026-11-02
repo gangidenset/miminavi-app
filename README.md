@@ -23,7 +23,7 @@ https://github.com/gangidenset/miminavi-app/releases/download/latest/miminavi.ap
 | `tools/drawio_to_map.py` | draw.io → アプリ用地図データ（`map.js`）の変換ツール。ビルド時に自動で実行 |
 | `app/src/main/assets/map.js` | 変換後の地図データ（自動生成。直接編集しない） |
 | `app/src/main/assets/index.html` `app.css` `app.js` | 画面・位置推定・ルート探索・音声案内 |
-| `app/src/main/java/jp/miminavi/app/MainActivity.java` | 画面（WebView）と端末機能の窓口。権限、読み上げ、音声認識、方位センサー |
+| `app/src/main/java/jp/miminavi/app/MainActivity.java` | 画面（WebView）と端末機能の窓口。権限、読み上げ、音声認識、方位センサー、CSV の書き出し |
 | `app/src/main/java/jp/miminavi/app/BeaconScanner.java` | BLE スキャン。RSSI を直近4秒で平均し、0.5秒ごとに画面へ渡す |
 | `app/src/main/java/jp/miminavi/app/BeaconParser.java` | 広告パケットの解析（iBeacon / AltBeacon / Eddystone-UID） |
 
@@ -53,6 +53,19 @@ https://github.com/gangidenset/miminavi-app/releases/download/latest/miminavi.ap
    - 現在地が分からないときや「デモ歩行」を押したときは、ルートを自動で歩く想定で進みます
 
 `app/src/main/assets/index.html` は PC のブラウザでも開けます（受付付近に立っている想定の疑似ビーコンで動作）。
+
+## 測定の記録と書き出し（ビーコンタブ）
+
+RSSI・推定距離の測定（測定手順書・測定結果一覧の Excel）に使う機能です。
+
+1. 「ビーコン」タブの「測定の記録」で、対象のビーコン・実際の距離・設置場所・高さ・向き・障害物を入れる（入力は次回も残る）
+2. 「記録を始める」を押す。30／45／60 秒のあいだ、0.5 秒ごとに次を保存して自動で終わる（記録中は減衰係数 n を変更できない）
+   - RSSI（アプリが距離に使う直近4秒の平均）、最新の受信値、推定距離、1m 地点の値（標準か補正か）、推定位置、測位方式
+3. 「結果を書き出す（CSV）」：1回の記録×ビーコンごとに1行。列の順番は測定結果一覧（Excel）と同じなので、そのまま貼り付けられる
+   - RSSI・推定距離の最小・平均・最大、測定回（同じ条件で何回目か）、距離誤差・絶対誤差・誤差率、生の受信値の最小・平均・最大、受信回数、端末、アプリ版
+4. 「生データを書き出す（CSV）」：0.5 秒ごとの全記録（あとで集計し直すとき用）
+
+書き出し先は Android の保存画面で選べます（端末の「ダウンロード」や Google ドライブなど）。CSV は Excel で文字化けしないよう BOM 付き UTF-8 です。記録は端末に保存され、「記録をすべて消す」か各記録の「消す」を押すまで残ります。
 
 ## フロアマップの更新方法
 
