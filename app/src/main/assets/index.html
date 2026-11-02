@@ -111,7 +111,7 @@
   <section class="view" id="v-plan" hidden>
     <div class="appbar"><div class="logo sm">事業所の図面</div><span class="chip" id="planSize"></span></div>
     <div class="placing" id="placingBar" hidden>
-      <div><b id="placingName"></b><span>を置いた場所を図面上でタップ</span></div>
+      <div><b id="placingName"></b><span id="placingText">を置いた場所を図面上でタップ</span></div>
       <button class="iconbtn" id="placingCancel">やめる</button>
     </div>
     <div class="map plan" id="planMap"></div>
@@ -145,6 +145,7 @@
       <h3>測定の記録<span class="sub">RSSI・推定距離を記録して CSV で書き出す</span></h3>
       <form class="recform" id="recForm">
         <label class="wide">対象のビーコン<select name="target" id="recTarget"><option value="">受信中のすべて</option></select></label>
+        <label class="wide">ミミナビの位置<select name="andPos" id="recPos"><option value="">指定しない（実際の距離を入力する）</option></select></label>
         <label>実際の距離 (m)<input name="dist" type="number" inputmode="decimal" step="0.1" min="0" placeholder="例 1"></label>
         <label>測定時間<select name="sec"><option value="30">30秒</option><option value="45">45秒</option><option value="60">60秒</option></select></label>
         <label>iPhoneの設置場所<input name="iphPlace" placeholder="例 事務所デスク"></label>
@@ -168,7 +169,7 @@
         <button class="btn small ghost" id="recExportRaw" hidden>生データを書き出す（CSV）</button>
         <button class="btn small ghost" id="recClear" hidden>記録をすべて消す</button>
       </div>
-      <p class="sub">記録中は 0.5 秒ごとに、受信中のビーコンの RSSI（アプリが距離に使う直近4秒の平均）・最新の受信値・推定距離・推定位置を保存します。「結果を書き出す」は測定結果一覧（Excel）と同じ列の順番なので、そのまま貼り付けられます。記録は端末に保存され、消すまで残ります。</p>
+      <p class="sub">記録中は 0.5 秒ごとに、受信中のビーコンの RSSI（アプリが距離に使う直近4秒の平均）・最新の受信値・推定距離・推定位置を保存します。「ミミナビの位置」を指定すると、各ビーコンまでの実際の距離（図面上の距離。高さを入れれば高さの差も含む）と、推定位置のずれを自動で計算します。複数のビーコンを同時に測るときに使います。「結果を書き出す」は測定結果一覧（Excel）と同じ列の順番なので、そのまま貼り付けられます。記録は端末に保存され、消すまで残ります。</p>
     </div>
     <div class="card">
       <h3>距離の推定</h3>
