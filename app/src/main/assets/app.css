@@ -178,3 +178,7 @@ button:focus-visible,input:focus-visible{outline:3px solid var(--coral);outline-
 .recper .perrow.off{opacity:.55}
 .recper .perrow input,.recper .perrow select{padding:5px 4px;font-size:12px}
 .recper .pertitle{margin:6px 0 0;font-size:12px;font-weight:700;color:var(--ink)}
+.recper .perplace{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:11.5px;color:var(--muted);margin:0 0 6px 3.8em}
+.recper .perrow1 b{font-family:var(--f-mono);font-weight:500;font-size:12px}
+.recper .perrow1 .perplace{margin-left:0}
+.recper .perplace .iconbtn{padding:4px 8px;font-size:11px}

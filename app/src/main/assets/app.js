@@ -165,7 +165,7 @@ $('tabbar').addEventListener('click', e => {
 });
 window.__back = () => {
   if (!$('dark').hidden) { $('dark').hidden = true; return true; }
-  if (st.placing) { st.placing = null; renderPlan(true); return true; }
+  if (st.placing) { const r = st.placing.rec || st.placing.recBeacon; st.placing = null; if (r) show('beacons'); else renderPlan(true); return true; }
   if (st.tab !== 'guide') { show(guideView); return true; }
   if (st.view !== 'home') { stopNav(); show('home'); return true; }
   return false;
@@ -321,36 +321,44 @@ function onePoint(u, prev) {
   return [b[0] + (dir[0] - b[0]) / L * u.d, b[1] + (dir[1] - b[1]) / L * u.d];
 }
 // 2点測位
-function twoPoint(u1, u2, prev) {
-  const [x1, y1] = u1.mb.at, [x2, y2] = u2.mb.at, r1 = u1.d, r2 = u2.d;
-  const D = Math.hypot(x2 - x1, y2 - y1);
-  if (D < 0.05) return onePoint(u1, prev);
-  const ex = (x2 - x1) / D, ey = (y2 - y1) / D;
-  if (r1 + r2 <= D) {                       // 離れていて交わらない：2台の間を d1 : d2 に分ける点
-    const t = r1 / (r1 + r2) * D;
-    return [x1 + ex * t, y1 + ey * t];
+// 2点測位
+//  2つの円の交点は、自分が2台を結ぶ線の外側にいるとき（ビーコン・ビーコン・自分の並び）に、RSSI の少しの揺れで
+//  左右へ大きくぶれたり、2台の間に出たりする。そこで、歩ける場所のマスのうち「2台までの距離が推定距離に
+//  いちばん合う所」を探す。線の外側・内側・横のどこでも同じ基準で比べ、同じくらい合う所が複数あるときは
+//  案内ルート（赤いライン）に近い所・前回の位置に近い所を選ぶ
+const TWO_LANE_W = 0.03;   // 案内ルートから 1m 離れるごとの重み（距離の2乗に掛ける）
+const TWO_PREV_W = 0.02;   // 前回の位置から 1m 離れるごとの重み（距離の2乗に掛ける）
+let laneDistMap = null;    // マスごとの案内ルートまでの距離（初回に作る）
+function laneDistAt(x, y) {
+  if (!LANES) return 0;
+  if (!laneDistMap) {
+    laneDistMap = new Float32Array(GW * GH);
+    const lanes = [];
+    for (let j = 0; j < GH; j++) for (let i = 0; i < GW; i++) if (isLane(i, j)) lanes.push(cellCenter([i, j]));
+    for (let j = 0; j < GH; j++) for (let i = 0; i < GW; i++) {
+      if (!walkable(i, j)) continue;
+      const c = cellCenter([i, j]);
+      let m = 1e9; lanes.forEach(l => { const d = dist(l, c); if (d < m) m = d; });
+      laneDistMap[j * GW + i] = lanes.length ? m : 0;
+    }
   }
-  if (Math.abs(r1 - r2) >= D) {             // 一方の円がもう一方を含む：2台を結ぶ線の外側
-    if (r1 > r2) { const s = (r1 + D + r2) / 2; return [x1 + ex * s, y1 + ey * s]; }
-    const s = (r2 + D + r1) / 2; return [x2 - ex * s, y2 - ey * s];
-  }
-  const a = (r1 * r1 - r2 * r2 + D * D) / (2 * D);          // 交点：P1 から a 進んで、垂直に ±h
-  const h = Math.sqrt(Math.max(0, r1 * r1 - a * a));
-  const bx = x1 + ex * a, by = y1 + ey * a;
-  const cands = [[bx - ey * h, by + ex * h], [bx + ey * h, by - ex * h]];
-  return pickCandidate(cands, prev);
+  return laneDistMap[y * GW + x];
 }
-// 交点が2つあるときの選び方：建物の中・案内ルートに近い・前回の位置に近い
-function pickCandidate(cands, prev) {
-  let best = cands[0], bs = Infinity;
-  cands.forEach(c => {
-    const f = nearestFree(c);
-    let sc = dist(cellCenter(f), c) > 0.5 ? 5 : 0;
-    if (LANES) { const l = nearestLaneCell(c, null); if (l) sc += dist(cellCenter(l), c); }
-    if (prev) sc += dist(c, prev);
-    if (sc < bs) { bs = sc; best = c; }
-  });
-  return best;
+function twoPoint(u1, u2, prev) {
+  if (dist(u1.mb.at, u2.mb.at) < 0.05) return onePoint(u1, prev);
+  const us = [u1, u2];
+  let best = null, bc = Infinity;
+  for (let y = 0; y < GH; y++) for (let x = 0; x < GW; x++) {
+    if (!walkable(x, y)) continue;
+    const c = cellCenter([x, y]);
+    let cost = 0;
+    us.forEach(u => { cost += Math.pow((dist(c, u.mb.at) - u.d) / Math.max(u.d, 0.5), 2); });
+    const ld = laneDistAt(x, y);
+    cost += TWO_LANE_W * ld * ld;
+    if (prev) cost += TWO_PREV_W * Math.pow(dist(c, prev), 2);
+    if (cost < bc) { bc = cost; best = c; }
+  }
+  return best || u1.mb.at.slice();
 }
 // 3点測位
 function threePoint(us, prev) {
@@ -976,6 +984,27 @@ $('planMap').addEventListener('click', e => {
     say(`${label}を、${placeName(at)}に動かしました。`);
     return;
   }
+  if (st.placing.recBeacon) {   // 測定の記録から、ビーコンを図面に置く
+    const { label, key } = st.placing;
+    st.placing = null;
+    let name = label;
+    const a = key && st.data.assign[key];
+    if (a && a.at) a.at = at;                                            // 自分で置いたビーコン（P-xx）を置き直す
+    else if (MAP.beacons.some(b => b.label === label) && !(a && !a.at && a.label !== label)) {
+      st.data.moved[label] = at; refreshBeacons();                       // 図面の B-xx を動かす
+    } else if (key) {                                                    // 図面にないビーコン（Minor 6 など）を新しく置く
+      name = nextCustomLabel();
+      Object.keys(st.data.assign).forEach(k => { if (k !== key && st.data.assign[k].label === name) delete st.data.assign[k]; });
+      st.data.assign[key] = { label: name, at };
+      if (rec.form.per[label]) { rec.form.per[name] = rec.form.per[label]; delete rec.form.per[label]; }
+      if (rec.form.target === label) rec.form.target = name;
+      recSave();
+    }
+    save(); estimate();
+    say(`${name}を、${placeName(at)}に置きました。`);
+    show('beacons'); $('recPer').dataset.sig = ''; renderRecPer(); renderRecPos(); renderRecTargets();
+    return;
+  }
   if (st.placing.rec) {
     st.placing = null;
     rec.form.andPos = '@map'; rec.form.andAt = at; recSave();
@@ -990,7 +1019,7 @@ $('planMap').addEventListener('click', e => {
   save(); estimate(); renderPlan(true);
   say(`${label}を、${placeName(at)}に配置しました。`);
 });
-$('placingCancel').onclick = () => { const r = st.placing && st.placing.rec; st.placing = null; if (r) { show('beacons'); renderRecPos(); } else renderPlan(true); };
+$('placingCancel').onclick = () => { const r = st.placing && (st.placing.rec || st.placing.recBeacon); st.placing = null; if (r) { show('beacons'); renderRecPos(); } else renderPlan(true); };
 
 // ------------------------------------------------------------ ビーコンタブ
 const rows = new Map();
@@ -1183,20 +1212,31 @@ function recEff(form, label) {
 // ビーコンごとの設定欄（受信中のビーコン＋設定済みのビーコン）
 function renderRecPer() {
   const box = $('recPer'); if (!box) return;
-  const f = rec.form, pos = recPosOf(f);
-  box.hidden = !!f.target;
-  if (f.target) return;
-  if (box.contains(document.activeElement)) return;
+  const f = rec.form, pos = recPosOf(f), one = !!f.target;
+  const ae = document.activeElement;
+  if (box.contains(ae) && /^(INPUT|SELECT)$/.test(ae.tagName)) return;   // 入力中は描き直さない
   const seen = new Set();
   st.beacons.forEach(b => { if (b.ageMs <= 5000) seen.add(recLabelOf(b)); });
-  const labels = [...new Set([...seen, ...Object.keys(f.per || {})])].sort((a, b) => a.localeCompare(b, 'ja', { numeric: true }));
-  const sig = JSON.stringify([labels, [...seen], !!pos, ...[f.andPos, f.andAt, f.iphH, f.andH, f.dist, f.iphDir, f.iphPlace].map(x => x || '')]);
+  const labels = one ? [f.target] : [...new Set([...seen, ...Object.keys(f.per || {})])].sort((a, b) => a.localeCompare(b, 'ja', { numeric: true }));
+  const placeSig = labels.map(l => { const mb = mapBeacons().find(b => b.label === l); return mb ? mb.at.join() + (mb.moved ? 'm' : '') : '-'; });
+  const sig = JSON.stringify([one, labels, [...seen], placeSig, !!pos, ...[f.andPos, f.andAt, f.iphH, f.andH, f.dist, f.iphDir, f.iphPlace].map(x => x || '')]);
   if (box.dataset.sig === sig) return;
   recReadPer();   // 描き直す前に、入力途中の値を取りこむ
   box.dataset.sig = sig;
   if (!labels.length) { box.innerHTML = '<p class="sub">受信中のビーコンがここに並び、ビーコンごとに実際の距離・向き・高さ・設置場所を入れられます。</p>'; return; }
   const v = (l, k) => esc(((f.per || {})[l] || {})[k] || '');
-  box.innerHTML = `<p class="pertitle">ビーコンごとの設定（iPhone ごとの条件）</p><div class="perhead"><span>ビーコン</span><span>実際の距離(m)</span><span>iPhoneの向き</span><span>高さ(m)</span><span>設置場所</span></div>` + labels.map(l => {
+  // 図面の位置（ビーコンの配置）の行
+  const placeLine = l => {
+    const mb = mapBeacons().find(b => b.label === l);
+    const where = mb ? `${esc(beaconPlace(mb))}${mb.moved ? '（移動済み）' : mb.custom ? '（自分で配置）' : ''}` : '図面に未配置';
+    const canPlace = mb || recKeyOfLabel(l);
+    return `<div class="perplace"><span>図面の位置：${where}</span>${canPlace ? `<button type="button" class="iconbtn" data-place="${esc(l)}">図面で置く</button>` : ''}${mb && mb.moved ? `<button type="button" class="iconbtn" data-unplace="${esc(l)}">元に戻す</button>` : ''}</div>`;
+  };
+  if (one) {
+    box.innerHTML = `<p class="pertitle">ビーコンの配置</p><div class="perrow1"><b>${esc(f.target)}</b>${placeLine(f.target)}</div>`;
+    return;
+  }
+  box.innerHTML = `<p class="pertitle">ビーコンごとの設定（iPhone ごとの条件・配置）</p><div class="perhead"><span>ビーコン</span><span>実際の距離(m)</span><span>iPhoneの向き</span><span>高さ(m)</span><span>設置場所</span></div>` + labels.map(l => {
     const auto = pos ? recTrueDist(f, pos.at, l) : null;
     const distIn = pos
       ? `<input disabled placeholder="${auto == null ? '—' : '自動 ' + auto.toFixed(1)}">`
@@ -1205,9 +1245,33 @@ function renderRecPer() {
     return `<div class="perrow${seen.has(l) ? '' : ' off'}"><b>${esc(l)}</b>${distIn}
       <select data-label="${esc(l)}" data-k="dir"><option value=""${dir ? '' : ' selected'}>共通（${esc(f.iphDir || '縦')}）</option><option${dir === '縦' ? ' selected' : ''}>縦</option><option${dir === '横' ? ' selected' : ''}>横</option></select>
       <input data-label="${esc(l)}" data-k="h" type="number" inputmode="decimal" step="0.1" min="0" value="${v(l, 'h')}" placeholder="${esc(f.iphH || '共通')}">
-      <input data-label="${esc(l)}" data-k="place" value="${v(l, 'place')}" placeholder="${esc(f.iphPlace || '共通')}"></div>`;
-  }).join('') + `<p class="sub">空欄は上の共通の値を使います。灰色は今受信していないビーコン（前に入れた設定）です。</p>`;
+      <input data-label="${esc(l)}" data-k="place" value="${v(l, 'place')}" placeholder="${esc(f.iphPlace || '共通')}"></div>${placeLine(l)}`;
+  }).join('') + `<p class="sub">空欄は上の共通の値を使います。灰色は今受信していないビーコン（前に入れた設定）です。「図面で置く」で、iPhone を実際に置いた場所を図面上で指定できます（現在地の計算・案内・実際の距離に使う）。</p>`;
 }
+// ラベル（B-xx・P-xx・Minor n）から、受信中のビーコンのキーを探す
+function recKeyOfLabel(l) {
+  const b = st.beacons.find(x => recLabelOf(x) === l);
+  if (b) return b.key;
+  const k = Object.keys(st.data.assign).find(k => st.data.assign[k].label === l);
+  return k || null;
+}
+$('recPer').addEventListener('click', e => {
+  const pb = e.target.closest('[data-place]');
+  if (pb) {
+    const l = pb.dataset.place;
+    st.placing = { recBeacon: true, label: l, key: recKeyOfLabel(l) };
+    show('plan');
+    say(`${l}を置いた場所を、図面の上でタップしてください。`);
+    return;
+  }
+  const ub = e.target.closest('[data-unplace]');
+  if (ub) {
+    delete st.data.moved[ub.dataset.unplace];
+    refreshBeacons(); save(); estimate();
+    $('recPer').dataset.sig = ''; renderRecPer(); renderRecPos();
+    say(`${ub.dataset.unplace}を図面の元の位置に戻しました。`);
+  }
+});
 // ミミナビの位置：B-xx（そのビーコンの図面上の位置）か、図面でタップした地点。指定すると実際の距離はビーコンごとに図面から計算する
 function recPosOf(form) {
   const v = form.andPos;
