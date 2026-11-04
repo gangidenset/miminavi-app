@@ -2,7 +2,7 @@
  * 地図は map.js（tools/drawio_to_map.py が draw.io から自動生成）の window.MIMI_MAP を使う。
  * ネイティブ側（MainActivity.java）とのやりとり：
  *   JS → ネイティブ : window.MimiNative.startScan() / speak() / listen() / save() など
- *   ネイティブ → JS : window.__native(type, data)  type = beacons | status | heading | speech | exported
+ *   ネイティブ → JS : window.__native(type, data)  type = beacons | status | heading | step | speech | exported
  * PC のブラウザで開いた場合は、疑似ビーコンで画面の動きを確認できる。
  */
 (() => {
@@ -100,8 +100,8 @@ const spoken = name => name.replace(/[（(]\s*([^）)]*?)\s*[)）]/g, '$1');
 const st = {
   view: 'home', tab: 'guide', sound: true,
   status: null, beacons: [], others: 0, scanning: false,
-  heading: null, pos: null, nav: null, room: null, roomCand: null, roomCandN: 0, near: null, nearCand: null, nearCandN: 0,
-  data: { v: 2, n: 4.0, tx: {}, northOffset: null, assign: {}, uuids: [], moved: {}, beaconH: '', phoneH: '', posMode: 'prox' },
+  heading: null, pos: null, nav: null, room: null, roomCand: null, roomCandN: 0, near: null, nearCand: null, nearCandN: 0, steps: 0, stepTimes: [],
+  data: { v: 2, n: 4.0, tx: {}, northOffset: null, assign: {}, uuids: [], moved: {}, beaconH: '', phoneH: '', posMode: 'prox', holdStill: true },
   browse: false, raw: [],
   placing: null,
 };
@@ -119,6 +119,7 @@ function load() {
       if (d.beaconH != null) st.data.beaconH = String(d.beaconH);
       if (d.phoneH != null) st.data.phoneH = String(d.phoneH);
       if (d.posMode === 'prox' || d.posMode === 'dist') st.data.posMode = d.posMode;
+      if (typeof d.holdStill === 'boolean') st.data.holdStill = d.holdStill;
       if (Array.isArray(d.uuids)) st.data.uuids = d.uuids.map(normUuid).filter(Boolean);
       else if (typeof d.uuid === 'string' && d.uuid) st.data.uuids = [normUuid(d.uuid)];   // 旧形式（1つだけ）から移行
     }
@@ -179,6 +180,7 @@ window.__native = (type, d) => {
   if (type === 'beacons') onBeacons(d);
   else if (type === 'status') { st.status = d; renderStatus(); }
   else if (type === 'heading') onHeading(d);
+  else if (type === 'step') onStep(d);
   else if (type === 'speech') onSpeech(d);
   else if (type === 'exported') onExported(d);
 };
@@ -199,6 +201,23 @@ function setUuids(list) {
   estimate();
   renderBeacons();
 }
+// 歩数（加速度センサーから1歩ごとに届く）。直近 WALK_WINDOW_MS に WALK_STEPS 歩以上あれば「歩いている」
+const WALK_WINDOW_MS = 2500, WALK_STEPS = 2;
+const HOLD_K = 0.05;   // 止まっているとき、新しい位置に寄せる割合（0.5秒ごと。歩いているときは 0.5）
+function onStep(d) {
+  st.steps = typeof d.n === 'number' ? d.n : st.steps + 1;
+  const now = Date.now();
+  st.stepTimes.push(now);
+  while (st.stepTimes.length && now - st.stepTimes[0] > WALK_WINDOW_MS) st.stepTimes.shift();
+}
+function isWalking() {
+  const now = Date.now();
+  return st.stepTimes.filter(t => now - t <= WALK_WINDOW_MS).length >= WALK_STEPS;
+}
+const hasStepSensor = () => !!(st.status && st.status.stepSensor);
+// 止まっているときは位置をほぼ動かさない（RSSI のゆれで位置が動かないように）。歩数が取れない端末では使わない
+const holdingStill = () => st.data.holdStill && hasStepSensor() && !isWalking();
+const walkLabel = () => !hasStepSensor() ? 'センサーなし' : isWalking() ? '歩いている' : '止まっている';
 function onBeacons(d) {
   const raw = d.beacons || [];
   st.raw = raw;
@@ -325,7 +344,12 @@ function estimate() {
   else if (used.length === 2) { p = twoPoint(used[0], used[1], prev); method = '2点測位'; }
   else { const r = threePoint(used, prev); p = r.p; method = r.ls ? '3点測位（最小二乗）' : '3点測位'; }
   // 前回となめらかにつなぐ（部屋が変わったときはそのまま移る）
-  if (prev && prevRoom === st.room) p = [prev[0] + 0.5 * (p[0] - prev[0]), prev[1] + 0.5 * (p[1] - prev[1])];
+  // 止まっているときは、部屋が変わっても、ビーコンの真横に引っ張るときも、少しずつしか動かさない（約10秒で追いつく）
+  const still = holdingStill();
+  if (prev && (prevRoom === st.room || still)) {
+    const k = still ? HOLD_K : 0.5;
+    p = [prev[0] + k * (p[0] - prev[0]), prev[1] + k * (p[1] - prev[1])];
+  }
   const raw = p;
   // 表示する位置は線の上に寄せる（案内中はそのルート、そうでなければ赤いライン）
   let cell = null, pathIdx = null;
@@ -337,7 +361,7 @@ function estimate() {
   }
   if (!cell) cell = nearestFree(raw);
   const [px, py] = (st.nav && !st.nav.sim) || LANES ? cellCenter(cell) : raw;
-  st.pos = { x: px, y: py, raw, acc: used[0].d, used, all, cell, room: st.room, method, prox,
+  st.pos = { x: px, y: py, raw, acc: used[0].d, used, all, cell, room: st.room, method, prox, still,
              pathIdx, path: st.nav && !st.nav.sim ? st.nav.path : null };
 }
 // 近接型
@@ -1042,6 +1066,8 @@ function renderPlan(full) {
   $('planPos').textContent = st.pos
     ? `x ${st.pos.x.toFixed(1)}m, y ${st.pos.y.toFixed(1)}m（${placeName([st.pos.x, st.pos.y])}付近・誤差 約${st.pos.acc.toFixed(1)}m）${st.room ? `／部屋：${roomName(st.room.name)}` : ''}`
     : '—（図面のビーコンを受信していません）';
+  $('planWalk').textContent = !hasStepSensor() ? '歩数センサーなし（止まっていても位置を固定しない）'
+    : `${walkLabel()}（歩数 ${st.steps}）${st.pos && st.pos.still ? '・位置をほぼ固定中' : ''}`;
   $('planUsed').textContent = !st.pos ? '—'
     : st.pos.prox && st.pos.prox.near ? `${st.pos.method}：${st.pos.prox.near.mb.label} ${Math.round(st.pos.prox.near.b.rssi)}dBm（1m地点 ${oneMeterOf(st.pos.prox.near.mb.label)}dBm${typeof st.data.tx[st.pos.prox.near.mb.label] === 'number' ? '・補正' : '・標準'}${st.pos.prox.diff != null ? `、2番目より ${st.pos.prox.diff.toFixed(1)}dB 強い` : ''}）`
     : st.pos.prox ? `${st.pos.method}：` + st.pos.used.map(u => `${u.mb.label} ${Math.round(u.b.rssi)}dBm`).join(' / ')
@@ -1149,6 +1175,8 @@ function renderBeacons() {
   warn.hidden = !w; warn.textContent = w;
   $('nRange').value = st.data.n; $('nVal').textContent = Number(st.data.n).toFixed(1);
   $('posMode').value = st.data.posMode;
+  $('holdStill').checked = st.data.holdStill;
+  $('walkState').textContent = hasStepSensor() ? `今：${walkLabel()}（歩数 ${st.steps}）` : 'この端末では歩数を数えられないため、使いません。';
   if (document.activeElement !== $('hBeacon')) $('hBeacon').value = st.data.beaconH;
   if (document.activeElement !== $('hPhone')) $('hPhone').value = st.data.phoneH;
   renderHeightNote();
@@ -1282,6 +1310,7 @@ $('uuidClear').onclick = () => { setUuids([]); say('すべてのビーコンを�
 $('nRange').addEventListener('input', e => { st.data.n = Number(e.target.value); $('nVal').textContent = st.data.n.toFixed(1); save(); });
 // 現在地の求め方（近接型／距離から3点測位）
 $('posMode').addEventListener('change', e => { st.data.posMode = e.target.value; save(); estimate(); renderPlan(true); });
+$('holdStill').addEventListener('change', e => { st.data.holdStill = e.target.checked; save(); });
 // 高さの補正の設定
 ['hBeacon', 'hPhone'].forEach(id => $(id).addEventListener('change', () => {
   st.data.beaconH = $('hBeacon').value.trim(); st.data.phoneH = $('hPhone').value.trim();
@@ -1503,7 +1532,7 @@ function recStop(save) {
 function recTick() {
   const cur = rec.cur; if (!cur) return;
   const now = Date.now();
-  const tick = { t: now - cur.startedAt, pos: st.pos ? [r2(st.pos.x), r2(st.pos.y)] : null, rawPos: st.pos ? [r2(st.pos.raw[0]), r2(st.pos.raw[1])] : null, method: st.pos ? st.pos.method : '', room: st.room ? st.room.name : '', b: [] };
+  const tick = { walk: walkLabel(), steps: st.steps, t: now - cur.startedAt, pos: st.pos ? [r2(st.pos.x), r2(st.pos.y)] : null, rawPos: st.pos ? [r2(st.pos.raw[0]), r2(st.pos.raw[1])] : null, method: st.pos ? st.pos.method : '', room: st.room ? st.room.name : '', b: [] };
   st.beacons.forEach(b => {
     if (b.ageMs > 5000) return;
     const label = recLabelOf(b);
@@ -1607,12 +1636,12 @@ function recSummaryCsv() {
   return csvOf(rows);
 }
 function recRawCsv() {
-  const rows = [['記録No', '測定日時', '経過(秒)', '対象ビーコン', 'Minor', 'RSSI(平均)', 'RSSI(最新の受信値)', '新しい受信', '推定距離(m)', '1m地点の値(dBm)', '減衰係数', '実際の距離(m)', '推定位置X(m)', '推定位置Y(m)', '測位方式', '今いる部屋', '計算位置X(m)', '計算位置Y(m)', 'ミミナビの位置', 'ミミナビX(m)', 'ミミナビY(m)']];
+  const rows = [['記録No', '測定日時', '経過(秒)', '対象ビーコン', 'Minor', 'RSSI(平均)', 'RSSI(最新の受信値)', '新しい受信', '推定距離(m)', '1m地点の値(dBm)', '減衰係数', '実際の距離(m)', '推定位置X(m)', '推定位置Y(m)', '測位方式', '今いる部屋', '計算位置X(m)', '計算位置Y(m)', 'ミミナビの位置', 'ミミナビX(m)', 'ミミナビY(m)', '歩行', '歩数']];
   rec.list.forEach(r => r.ticks.forEach(tk => tk.b.forEach(x => {
     const P = r.position, td = P ? recTrueDist(r.form, P.at, x.label) : numOrNull(recEff(r.form, x.label).dist);
     rows.push([r.no, fmtTime(r.at + tk.t), r1(tk.t / 1000), x.label, x.minor, x.rssi, x.last, x.fresh ? 1 : 0, x.d, x.A, r.n, td == null ? null : r2(td),
       tk.pos ? tk.pos[0] : null, tk.pos ? tk.pos[1] : null, tk.method, tk.room, tk.rawPos ? tk.rawPos[0] : null, tk.rawPos ? tk.rawPos[1] : null,
-      P ? P.label : null, P ? r2(P.at[0]) : null, P ? r2(P.at[1]) : null]);
+      P ? P.label : null, P ? r2(P.at[0]) : null, P ? r2(P.at[1]) : null, tk.walk == null ? null : tk.walk, tk.steps == null ? null : tk.steps]);
   })));
   return csvOf(rows);
 }
@@ -1687,5 +1716,5 @@ if (N) {
   startMock();
 }
 // テスト用
-window.__mimi = { proximity, decideNear, lanePathPts, laneAnchor, BEACONS, route, segments, matchDest, DESTS, ENTRY, st, startNav, doorsOnPath, atDest, roomAt, estimate, rec };
+window.__mimi = { proximity, decideNear, onStep, isWalking, lanePathPts, laneAnchor, BEACONS, route, segments, matchDest, DESTS, ENTRY, st, startNav, doorsOnPath, atDest, roomAt, estimate, rec };
 })();
