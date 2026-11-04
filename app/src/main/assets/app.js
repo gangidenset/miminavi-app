@@ -1202,8 +1202,8 @@ function renderHeightNote() {
 // 記録中は 0.5 秒ごと（ビーコンの通知ごと）に、受信中のビーコンの値と推定位置を保存する。
 // 「結果を書き出す」は測定結果一覧（Excel）と同じ列の順番の CSV、「生データ」は 0.5 秒ごとの全記録。
 const REC_KEY = 'records';
-const REC_FIELDS = ['target', 'andPos', 'dist', 'sec', 'reps', 'iphPlace', 'andPlace', 'iphH', 'andH', 'iphDir', 'andDir', 'obst', 'note'];
-const rec = { list: [], form: { sec: '30', reps: '1', iphDir: '縦', andDir: '縦', obst: '無し', per: {} }, cur: null, next: null, seq: 0 };
+const REC_FIELDS = ['target', 'andPos', 'dist', 'sec', 'reps', 'iphPlace', 'andPlace', 'iphH', 'andH', 'iphDir', 'andDir', 'body', 'obst', 'note'];
+const rec = { list: [], form: { sec: '30', reps: '1', iphDir: '縦', andDir: '縦', body: '正面', obst: '無し', per: {} }, cur: null, next: null, seq: 0 };
 function recLoad() {
   try {
     const raw = N && N.loadItem ? N.loadItem(REC_KEY) : localStorage.getItem('miminavi-' + REC_KEY);
@@ -1444,7 +1444,7 @@ function recBuild(cur) {
   const position = cur.pos ? { label: cur.pos.label, at: cur.pos.at, shown, calc, err: shown ? dist(shown, cur.pos.at) : null, errCalc: calc ? dist(calc, cur.pos.at) : null } : null;
   const f = cur.form;
   const perKey = form => form.target ? '' : JSON.stringify(Object.keys(form.per || {}).sort().map(k => [k, form.per[k]]));
-  const same = rec.list.filter(r => ['target', 'andPos', 'dist', 'iphPlace', 'andPlace', 'iphH', 'andH', 'iphDir', 'andDir', 'obst'].every(k => (r.form[k] || '') === (f[k] || '')) && perKey(r.form) === perKey(f)).length;
+  const same = rec.list.filter(r => ['target', 'andPos', 'dist', 'iphPlace', 'andPlace', 'iphH', 'andH', 'iphDir', 'andDir', 'body', 'obst'].every(k => (r.form[k] || '') === (f[k] || '')) && perKey(r.form) === perKey(f)).length;
   rec.seq++;
   return {
     no: rec.seq, at: cur.startedAt, sec: r1((Math.min(Date.now(), cur.until) - cur.startedAt) / 1000), form: f, n: cur.n, round: same + 1,
@@ -1483,7 +1483,7 @@ function renderRec() {
       return `<span>${esc(b.label)}${b.iphDir ? `（${esc(b.iphDir)}）` : ''}：RSSI ${b.rssi.avg.toFixed(1)}（${b.rssi.min}〜${b.rssi.max}）／距離 ${b.dist.avg.toFixed(2)}m${err}</span>`;
     }).join('') + (P && P.err != null ? `<span>位置のずれ ${P.err.toFixed(2)}m（計算位置 ${P.errCalc.toFixed(2)}m）</span>` : '');
     const where = P ? `ミミナビ ${esc(P.label)}` : r.beacons.length > 1 ? `${r.beacons.length}台` : dist == null ? '距離未入力' : dist + 'm';
-    return `<div class="prow"><div class="rtxt"><b>No.${r.no}</b>　${esc(fmtTime(r.at))}　${where}・Android ${esc(f.andDir || '')}・${esc(f.obst || '')}・${r.round}回目${lines}</div><button class="iconbtn" data-del-rec="${r.no}">消す</button></div>`;
+    return `<div class="prow"><div class="rtxt"><b>No.${r.no}</b>　${esc(fmtTime(r.at))}　${where}・Android ${esc(f.andDir || '')}${f.body ? '・体 ' + esc(f.body) : ''}・${esc(f.obst || '')}・${r.round}回目${lines}</div><button class="iconbtn" data-del-rec="${r.no}">消す</button></div>`;
   }).join('');
 }
 // ---- CSV
@@ -1492,7 +1492,7 @@ const csvOf = rows => rows.map(r => r.map(csvCell).join(',')).join('\r\n') + '\r
 const REC_HEAD = ['項番', '測定日時', '測定回', 'iPhone設置場所', 'Android設置場所', '実際の距離(m)', 'iPhoneの高さ(m)', 'Androidの高さ(m)', 'iPhoneの向き', 'Androidの向き', '障害物',
   '減衰係数', '1m地点の値(dBm)', '1m値の種別', '対象ビーコン', 'RSSI最小値', 'RSSI平均値', 'RSSI最大値', '推定距離最小値', '推定距離平均値', '推定距離最大値', '測定時間(秒)', 'サンプル数',
   '距離誤差', '絶対誤差', '誤差率(%)', '備考', '生RSSI最小値', '生RSSI平均値', '生RSSI最大値', '受信回数', '受信端末', 'アプリ版', '記録No',
-  'ミミナビの位置', 'ミミナビX(m)', 'ミミナビY(m)', '推定位置X(平均)', '推定位置Y(平均)', '位置のずれ(m)', '計算位置のずれ(m)'];
+  'ミミナビの位置', 'ミミナビX(m)', 'ミミナビY(m)', '推定位置X(平均)', '推定位置Y(平均)', '位置のずれ(m)', '計算位置のずれ(m)', '体の向き'];
 function recSummaryCsv() {
   const rows = [REC_HEAD];
   rec.list.forEach(r => r.beacons.forEach(b => {
@@ -1506,7 +1506,7 @@ function recSummaryCsv() {
       err, err == null ? null : Math.abs(err), err == null || !dist ? null : r1(Math.abs(err) / dist * 100), f.note,
       b.raw ? b.raw.min : null, b.raw ? r1(b.raw.avg) : null, b.raw ? b.raw.max : null, b.received, r.model, r.ver, r.no,
       P ? P.label : null, P ? r2(P.at[0]) : null, P ? r2(P.at[1]) : null, P && P.shown ? r2(P.shown[0]) : null, P && P.shown ? r2(P.shown[1]) : null,
-      P && P.err != null ? r2(P.err) : null, P && P.errCalc != null ? r2(P.errCalc) : null]);
+      P && P.err != null ? r2(P.err) : null, P && P.errCalc != null ? r2(P.errCalc) : null, f.body]);
   }));
   return csvOf(rows);
 }
