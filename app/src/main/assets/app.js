@@ -686,6 +686,13 @@ function buildMap(el, opt = {}) {
   }
   if (opt.dest) s += `<g transform="translate(${P(opt.dest.at)})"><path d="${pinPath(1.4)}" fill="var(--coral)"/><circle cy="${-15 * 1.4 * K}" r="${3.5 * 1.4 * K}" fill="#fff"/></g>`;
   s += `<g class="dyn"></g>`;
+  // 向いている方向の △（図面タブ。現在地の点の外側に置き、向きに合わせて回す）
+  if (!opt.path) {
+    const R = 46 * K, sx = (R * Math.sin(Math.PI / 6)).toFixed(1), sy = (-R * Math.cos(Math.PI / 6)).toFixed(1);
+    s += `<g class="headg" transform="translate(-9999 -9999)">`
+      + `<path d="M0 0 L${-sx} ${sy} A${R} ${R} 0 0 1 ${sx} ${sy} Z" fill="var(--coral)" fill-opacity=".3" stroke="var(--coral)" stroke-width="${1.5 * K}" stroke-opacity=".6"/>`   // 向いている方向の扇（±30°）
+      + `<path d="M0 ${-38 * K} L${7 * K} ${-12 * K} L${-7 * K} ${-12 * K} Z" fill="var(--coral)" stroke="#fff" stroke-width="${2 * K}" stroke-linejoin="round"/></g>`;   // 細長い △
+  }
   if (opt.path) s += `<g class="me" transform="translate(-9999 -9999)"><circle r="${13 * K}" fill="var(--coral)" opacity=".18"/><path d="M0 ${-9 * K} L${7 * K} ${7 * K} L0 ${3 * K} L${-7 * K} ${7 * K} Z" fill="var(--coral)" stroke="#fff" stroke-width="${1.5 * K}" stroke-linejoin="round"/></g>`;
   const ex = (v[0] + v[2]) * U, ey = (v[1] + v[3]) * U;
   s += `<text x="${ex - 20}" y="${ey - 20}" text-anchor="end" font-family="var(--f-mono)" font-size="26" fill="var(--muted)">↑図面の上　━ 1m</text>`;
@@ -694,6 +701,13 @@ function buildMap(el, opt = {}) {
   el.dataset.nav = opt.path ? '1' : '';
   el.style.setProperty('--map-ratio', (vw / vh).toFixed(3));
   updateDyn(el);
+}
+// 図面タブの △ を、現在地の位置・向いている方向に合わせる（方角合わせをしていないときは出さない）
+function placeHeading(el) {
+  const g = el && el.querySelector('.headg'); if (!g) return;
+  const h = mapHeading();
+  if (!st.pos || h == null) { g.setAttribute('transform', 'translate(-9999 -9999)'); return; }
+  g.setAttribute('transform', `translate(${(st.pos.x * U).toFixed(1)} ${(st.pos.y * U).toFixed(1)}) rotate(${h.toFixed(0)})`);
 }
 // 地図ピン（先端が原点）
 function pinPath(scale) {
@@ -723,6 +737,7 @@ function updateDyn(el) {
     s += `<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="${(Math.max(0.3, Math.min(st.pos.acc, 4)) * U).toFixed(1)}" fill="var(--coral)" opacity=".15"/>`;
     s += `<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="${7 * K}" fill="var(--coral)" stroke="#fff" stroke-width="${2 * K}"/>`;
   }
+  placeHeading(el);
   const rp = recPosOf(rec.form);
   if (rp && el.id === 'planMap' && rp.label.startsWith('図面')) {
     const [mx, my] = [rp.at[0] * U, rp.at[1] * U], k = 8 * K;
@@ -789,6 +804,8 @@ $('start').onclick = () => { show('calib'); say('ミミナビを起動しまし�
 const COMPASS = ['北', '北東', '東', '南東', '南', '南西', '西', '北西'];
 function onHeading(deg) {
   st.heading = deg;
+  if (st.view === 'plan') placeHeading($('planMap'));
+  if (st.view === 'nav' && st.nav && !st.nav.sim && st.pos && mapHeading() != null) placeMeAt([st.pos.x, st.pos.y], mapHeading());
   if (st.view === 'calib') {
     $('needle').style.transform = `rotate(${deg}deg)`;
     $('headingTxt').textContent = `方位 ${deg}°（${COMPASS[Math.round(deg / 45) % 8]}）`;
@@ -1009,11 +1026,12 @@ function updateSrcChip() {
   else if (st.pos) { c.textContent = `BLE 屋内測位（${st.pos.used.length}台）`; c.className = 'chip'; }
   else { c.textContent = 'BLE 受信待ち'; c.className = 'chip off'; }
 }
-function placeMeAt(p, d) {
+// 案内画面の現在地の矢印。deg は図面の上を 0° とした向き
+function placeMeAt(p, deg) {
   const g = $('navMap').querySelector('.me'); if (!g) return;
-  g.setAttribute('transform', `translate(${(p[0] * U).toFixed(1)} ${(p[1] * U).toFixed(1)}) rotate(${d * 90})`);
+  g.setAttribute('transform', `translate(${(p[0] * U).toFixed(1)} ${(p[1] * U).toFixed(1)}) rotate(${Math.round(deg)})`);
 }
-const placeMeCell = (c, d) => placeMeAt(cellCenter(c), d);
+const placeMeCell = (c, d) => placeMeAt(cellCenter(c), d * 90);
 const segIndexAt = i => { const segs = st.nav.segs; for (let k = 0; k < segs.length; k++) if (i > segs[k].startIdx && i <= segs[k].startIdx + segs[k].n) return k; return segs.length - 1; };
 
 // path[i] に着いたときの案内
@@ -1069,7 +1087,9 @@ function navRealUpdate() {
   updateSrcChip();
   if (!st.pos) return;
   const pos = [st.pos.x, st.pos.y];
-  placeMeAt(pos, nav.segs[segIndexAt(Math.max(1, nav.idx))].d);
+  // 矢印は向いている方向（方角合わせをしていなければ、ルートの進む方向）
+  const h = mapHeading();
+  placeMeAt(pos, h != null ? h : nav.segs[segIndexAt(Math.max(1, nav.idx))].d * 90);
   // 到着：条件を満たす状態が約1.5秒（3回）続いたら
   nav.arriveN = atDest(nav.dest) ? (nav.arriveN || 0) + 1 : 0;
   if (nav.arriveN >= 3) { advance(nav.path.length - 1); return; }
@@ -1140,6 +1160,8 @@ function renderPlan(full) {
   $('planPos').textContent = st.pos
     ? `x ${st.pos.x.toFixed(1)}m, y ${st.pos.y.toFixed(1)}m（${placeName([st.pos.x, st.pos.y])}付近・誤差 約${st.pos.acc.toFixed(1)}m）${st.room ? `／部屋：${roomName(st.room.name)}` : ''}`
     : '—（図面のビーコンを受信していません）';
+  $('planHead').textContent = mapHeading() != null ? `図面の上から ${Math.round(mapHeading())}°（図面の △ の向き）`
+    : st.heading == null ? 'コンパスの値がありません' : '方角合わせをすると、図面に向き（△）が出ます（案内タブ →「この施設で案内を始める」→ 方角合わせ）';
   $('planWalk').textContent = !hasStepSensor() ? '歩数センサーなし（止まっていても位置を固定しない）'
     : `${walkLabel()}（歩数 ${st.steps}）${st.pos && st.pos.still ? '・位置をほぼ固定中' : ''}${pdrActive() ? `・歩数で進める（歩幅 ${st.data.stepLen}m・向き ${Math.round(mapHeading())}°${st.pdrLast === 'turn' ? '・ルートの方向を向いていないので止める' : ''}）` : ''}`;
   $('planUsed').textContent = !st.pos ? '—'
