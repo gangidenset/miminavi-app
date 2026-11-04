@@ -92,7 +92,32 @@
         </object>
         <object label="" kind="corridor" name="案内ルート（縦：トイレ前〜受付前）" id="9UBzY8OmY6aiZHIXsIl8-0">
           <mxCell parent="L_room" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;opacity=80;" vertex="1">
-            <mxGeometry height="110" width="22.5" x="257.5" y="830" as="geometry" />
+            <mxGeometry height="552" width="22.5" x="500" y="610" as="geometry" />
+          </mxCell>
+        </object>
+        <object label="" kind="corridor" name="案内ルート（縦：トイレ前〜受付前）" id="ThyyCP9rVKgp_BeNNYXg-0">
+          <mxCell parent="L_room" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;opacity=80;" vertex="1">
+            <mxGeometry height="222" width="22.5" x="627.5" y="940" as="geometry" />
+          </mxCell>
+        </object>
+        <object label="" kind="corridor" name="案内ルート（縦：トイレ前〜受付前）" id="ThyyCP9rVKgp_BeNNYXg-1">
+          <mxCell parent="L_room" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;opacity=80;" vertex="1">
+            <mxGeometry height="290" width="22.5" x="990" y="940" as="geometry" />
+          </mxCell>
+        </object>
+        <object label="" kind="corridor" name="案内ルート（縦：トイレ前〜受付前）" id="ThyyCP9rVKgp_BeNNYXg-2">
+          <mxCell parent="L_room" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;opacity=80;" vertex="1">
+            <mxGeometry height="280" width="22.5" x="930" y="680" as="geometry" />
+          </mxCell>
+        </object>
+        <object label="" kind="corridor" name="案内ルート（縦：トイレ前〜受付前）" id="ThyyCP9rVKgp_BeNNYXg-3">
+          <mxCell parent="L_room" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;opacity=80;" vertex="1">
+            <mxGeometry height="367" width="22.5" x="1310" y="573" as="geometry" />
+          </mxCell>
+        </object>
+        <object label="" kind="corridor" name="案内ルート（縦：トイレ前〜受付前）" id="ThyyCP9rVKgp_BeNNYXg-4">
+          <mxCell parent="L_room" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;opacity=80;" vertex="1">
+            <mxGeometry height="350" width="22.5" x="1570" y="960" as="geometry" />
           </mxCell>
         </object>
         <mxCell id="L_lane" parent="0" value="通路（案内ルート）" />
@@ -103,7 +128,7 @@
         </object>
         <object label="" kind="corridor" name="案内ルート（横：会議室①〜執務スペース）" id="c302">
           <mxCell parent="L_lane" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;opacity=80;" vertex="1">
-            <mxGeometry height="28" width="1132.5" x="257.5" y="940" as="geometry" />
+            <mxGeometry height="28" width="1335" x="257.5" y="940" as="geometry" />
           </mxCell>
         </object>
         <mxCell id="uuhO9dmPfqnmZsen3Hdi-5" parent="0" style="locked=0;" value="イス" />
