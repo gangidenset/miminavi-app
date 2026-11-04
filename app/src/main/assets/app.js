@@ -430,7 +430,9 @@ function estimate() {
   }
   else if (used.length === 1) { p = onePoint(used[0], prev); method = '1点測位'; }
   else if (used.length === 2) { p = twoPoint(used[0], used[1], prev); method = '2点測位'; }
-  else { const r = threePoint(used, prev); p = r.p; method = r.ls ? '3点測位（最小二乗）' : '3点測位'; }
+  // 3台目が2台目より THIRD_DROP_DB 以上弱いときは、遠くて距離が不正確なので使わず2点測位にする
+  else if (strength(used[1]) - strength(used[2]) >= THIRD_DROP_DB) { used = used.slice(0, 2); p = twoPoint(used[0], used[1], prev); method = '2点測位（3台目は弱いので使わない）'; }
+  else { p = threePoint(used, prev); method = '3点測位'; }
   const pull = pullToStrongest(all, p); p = pull.p;
   // 前回となめらかにつなぐ（部屋が変わったときはそのまま移る）
   // 止まっているときは、部屋が変わっても、ビーコンの真横に引っ張るときも、少しずつしか動かさない（約10秒で追いつく）
@@ -563,6 +565,7 @@ function onePoint(u, prev) {
 //  左右へ大きくぶれたり、2台の間に出たりする。そこで、歩ける場所のマスのうち「2台までの距離が推定距離に
 //  いちばん合う所」を探す。線の外側・内側・横のどこでも同じ基準で比べ、同じくらい合う所が複数あるときは
 //  案内ルート（赤いライン）に近い所・前回の位置に近い所を選ぶ
+const THIRD_DROP_DB = 3;   // 3台目がこれ以上弱ければ、3点測位をやめて2点測位にする
 const TWO_LANE_W = 0.03;   // 案内ルートから 1m 離れるごとの重み（距離の2乗に掛ける）
 const TWO_PREV_W = 0.02;   // 前回の位置から 1m 離れるごとの重み（距離の2乗に掛ける）
 let laneDistMap = null;    // マスごとの案内ルートまでの距離（初回に作る）
@@ -583,7 +586,12 @@ function laneDistAt(x, y) {
 }
 function twoPoint(u1, u2, prev) {
   if (dist(u1.mb.at, u2.mb.at) < 0.05) return onePoint(u1, prev);
-  const us = [u1, u2];
+  return fitOnGrid([u1, u2], prev);
+}
+// 2点測位・3点測位で共通：歩ける場所のマスのうち、各ビーコンまでの距離が推定距離にいちばん合う所。
+//  合い方は距離のずれの割合（(図面上の距離 − 推定距離) ÷ 推定距離）の2乗の和で比べるので、遠いビーコンのずれは効きにくい。
+//  案内ルート（赤いライン）から離れるほど・前回の位置から離れるほど少し不利にする
+function fitOnGrid(us, prev) {
   let best = null, bc = Infinity;
   for (let y = 0; y < GH; y++) for (let x = 0; x < GW; x++) {
     if (!walkable(x, y)) continue;
@@ -595,36 +603,14 @@ function twoPoint(u1, u2, prev) {
     if (prev) cost += TWO_PREV_W * Math.pow(dist(c, prev), 2);
     if (cost < bc) { bc = cost; best = c; }
   }
-  return best || u1.mb.at.slice();
+  return best || us[0].mb.at.slice();
 }
 // 3点測位
+//  これまでは3つの円の式を引き算した連立方程式を解いていたが、距離を2乗して引き算するため遠いビーコン
+//  （いちばん不正確）のずれが大きく効き、案内ルートも考えないので、壁の向こうや別の廊下に出やすかった。
+//  そこで2点測位と同じく、歩ける場所のマスから案内ルートの近くを優先して探す
 function threePoint(us, prev) {
-  const [[x0, y0], [x1, y1], [x2, y2]] = us.map(u => u.mb.at);
-  const [r0, r1, r2] = us.map(u => u.d);
-  // (x−xi)² + (y−yi)² = ri² を、1台目の式から引くと x, y の1次式になる
-  const a11 = 2 * (x1 - x0), a12 = 2 * (y1 - y0), b1 = r0 * r0 - r1 * r1 + x1 * x1 - x0 * x0 + y1 * y1 - y0 * y0;
-  const a21 = 2 * (x2 - x0), a22 = 2 * (y2 - y0), b2 = r0 * r0 - r2 * r2 + x2 * x2 - x0 * x0 + y2 * y2 - y0 * y0;
-  const det = a11 * a22 - a12 * a21;
-  // 3台が一直線に近い（三角形がつぶれている）と解けない：三角形の面積と一番長い辺で判定
-  const side = Math.max(Math.hypot(x1 - x0, y1 - y0), Math.hypot(x2 - x0, y2 - y0), Math.hypot(x2 - x1, y2 - y1));
-  if (Math.abs(det) / 8 > 0.15 * side * side) {
-    const p = [(b1 * a22 - a12 * b2) / det, (a11 * b2 - b1 * a21) / det];
-    if (dist(cellCenter(nearestFree(p)), p) < 1.0) return { p, ls: false };
-  }
-  return { p: leastSquares(us, prev), ls: true };
-}
-// 最小二乗：歩ける場所のマスのうち、Σ ((ビーコンまでの距離 − d) ÷ d)² がいちばん小さい所
-function leastSquares(us, prev) {
-  let best = null, bc = Infinity;
-  for (let y = 0; y < GH; y++) for (let x = 0; x < GW; x++) {
-    if (!walkable(x, y)) continue;
-    const c = cellCenter([x, y]);
-    let cost = 0;
-    us.forEach(u => { cost += Math.pow((dist(c, u.mb.at) - u.d) / Math.max(u.d, 0.5), 2); });
-    if (prev) cost += 0.02 * Math.pow(dist(c, prev), 2);
-    if (cost < bc) { bc = cost; best = c; }
-  }
-  return best || us[0].mb.at.slice();
+  return fitOnGrid(us, prev);
 }
 function nearestIdxOnPath(path, p) {
   let bi = 0, bd = 1e9;
