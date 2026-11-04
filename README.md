@@ -15,20 +15,122 @@ main に変更が入るたびに GitHub Actions でビルドされ、次の URL 
 
 https://github.com/gangidenset/miminavi-app/releases/download/latest/miminavi.apk
 
-## 構成
+## ソースコードの構成と役割
 
-| 場所 | 内容 |
+### フォルダとファイル
+
+```
+miminavi-app/
+├── .github/workflows/build-apk.yml   … APK の自動ビルド（GitHub Actions）
+├── map/floor.drawio                  … フロアマップ（draw.io）。図面を変えるときはここを編集
+├── tools/
+│   ├── drawio_to_map.py              … draw.io → アプリ用の地図データ（map.js）に変換
+│   └── analyze_rssi.py               … 測定結果 CSV の分析（距離の式の値 A・n、体の向き・壁のずれ）
+├── app/
+│   ├── build.gradle.kts              … アプリのビルド設定（バージョン番号・署名・SDK）
+│   ├── debug.keystore                … APK の署名用キー（検証用。公開してよいもの）
+│   └── src/main/
+│       ├── AndroidManifest.xml       … 権限（Bluetooth・位置情報）と起動する画面の宣言
+│       ├── java/jp/miminavi/app/     … Android 側（Java）：端末の機能を扱う
+│       │   ├── MainActivity.java
+│       │   ├── BeaconScanner.java
+│       │   └── BeaconParser.java
+│       ├── assets/                   … 画面側（HTML・JavaScript）：画面・測位・案内
+│       │   ├── index.html
+│       │   ├── app.css
+│       │   ├── app.js
+│       │   └── map.js                … 地図データ（自動生成。直接編集しない）
+│       └── res/                      … アイコン・アプリ名・テーマ
+├── build.gradle.kts / settings.gradle.kts / gradle.properties … プロジェクト全体のビルド設定
+└── gradlew / gradlew.bat / gradle/wrapper/ … Gradle を自動で用意して動かすためのファイル
+```
+
+### 全体のしくみ
+
+アプリは **Android 側（Java）** と **画面側（WebView の中の HTML・JavaScript）** の2つでできています。Android 側は端末の機能（Bluetooth・センサー・読み上げなど）だけを受け持ち、現在地の計算・ルート探索・案内はすべて画面側の `app.js` で行います。
+
+```
+iPhone（Beacon Simulator）
+   │ BLE の電波（iBeacon）
+   ▼
+BeaconScanner.java ── BeaconParser.java で中身を読む → RSSI を直近4秒で平均
+   │ 0.5秒ごとに受信中のビーコンの一覧
+   ▼
+MainActivity.java ── 加速度（歩数）・方位（コンパス）も送る
+   │ window.__native('beacons' / 'step' / 'heading' / 'status', …)
+   ▼
+app.js ── map.js（図面）を使って、現在地の計算・ルート探索・音声案内・測定の記録
+   │ MimiNative.speak() / listen() / exportFile() など
+   ▼
+MainActivity.java ── 読み上げ・音声認識・CSV の保存・画面を消さない設定
+```
+
+### Android 側（`app/src/main/java/jp/miminavi/app/`）
+
+| ファイル | 役割 |
 |---|---|
-| `map/floor.drawio` | **フロアマップ（draw.io）**。図面を変えるときはこれを編集する |
-| `tools/analyze_rssi.py` | 測定結果 CSV から距離の式の値（A・n）と、体の向き・壁などによる RSSI のずれを求める分析ツール |
-| `tools/drawio_to_map.py` | draw.io → アプリ用地図データ（`map.js`）の変換ツール。ビルド時に自動で実行 |
-| `app/src/main/assets/map.js` | 変換後の地図データ（自動生成。直接編集しない） |
-| `app/src/main/assets/index.html` `app.css` `app.js` | 画面・位置推定・ルート探索・音声案内 |
-| `app/src/main/java/jp/miminavi/app/MainActivity.java` | 画面（WebView）と端末機能の窓口。権限、読み上げ、音声認識、方位センサー、CSV の書き出し |
-| `app/src/main/java/jp/miminavi/app/BeaconScanner.java` | BLE スキャン。RSSI を直近4秒で平均し、0.5秒ごとに画面へ渡す |
-| `app/src/main/java/jp/miminavi/app/BeaconParser.java` | 広告パケットの解析（iBeacon / AltBeacon / Eddystone-UID） |
+| `MainActivity.java` | アプリの入口。WebView に `index.html` を表示し、画面側との窓口（`MimiNative`）を用意する。権限の確認、Bluetooth・位置情報の状態の通知、読み上げ（TTS）、音声認識、**方位（コンパス）**、**歩数（加速度から数える）**、設定・記録の保存、CSV の書き出し、画面を消さない設定を受け持つ |
+| `BeaconScanner.java` | BLE のスキャン。受信したビーコンごとに RSSI を直近4秒で平均し、0.5秒ごとに一覧を `MainActivity` へ渡す。使う UUID が決まっていれば、Android の OS 側でも絞り込む |
+| `BeaconParser.java` | 広告パケット（生のバイト列）から、iBeacon / AltBeacon / Eddystone-UID の UUID・Major・Minor などを取り出す。Android に依存しないので PC でも試せる |
+
+### 画面側（`app/src/main/assets/`）
+
+| ファイル | 役割 |
+|---|---|
+| `index.html` | 画面の部品（ホーム・方角合わせ・行き先・案内・到着・図面タブ・ビーコンタブ）。PC のブラウザで開くと、疑似ビーコンで動作を確かめられる |
+| `app.css` | 画面のデザイン（色・文字・配置） |
+| `app.js` | アプリの中身。下の表のとおり、機能ごとに区切ってある |
+| `map.js` | 図面のデータ（壁・ドア・部屋・目的地・ビーコン・案内ルート・0.2m のマス）。`tools/drawio_to_map.py` が `map/floor.drawio` から作る |
+
+`app.js` の中の区切り（`// ----` の見出し）
+
+| 区切り | 内容 |
+|---|---|
+| 地図データ・状態 | `map.js` の読み込み、図面の座標の計算、設定（減衰係数・歩幅・向きの基準など）の保存と読み込み |
+| 音声・画面切り替え・ネイティブからの通知 | 読み上げ、画面の切り替え、Android 側から届くビーコン・歩数・方位・状態の受け取り |
+| ビーコン → 図面の B-xx | 受信したビーコンを Minor 番号（または手動の割り当て）で図面のビーコンに対応させる。推定距離の式 |
+| **測位** | 現在地の計算。近接型（強い2台の強さの差）／距離から計算（1点・2点・3点測位）、ビーコンの真横に引っ張る、いちばん強いビーコンの方へ引っ張る、止まっているときの固定、歩数とコンパスでルートに沿って進める |
+| 図面の描画 | 図面（SVG）、ビーコン、現在地の点、向きの △、北の印 |
+| ホーム・方角合わせ・行き先の入力と特定 | 案内を始めるまでの画面。行き先の聞き取りと候補の絞り込み |
+| ルート探索 | 0.2m のマスの上で、案内ルート（赤いライン）を優先し、曲がる回数の少ないルートを探す（ダイクストラ法） |
+| 案内 | 進み具合の判定、曲がり角・ドアの手前・到着の読み上げ、デモ歩行 |
+| 図面タブ・ビーコンタブ | 図面タブ（推定位置・使用ビーコン・向き・歩行の表示、ビーコンを動かす）、ビーコンタブ（受信一覧・1mで補正・使う UUID・距離の推定の設定） |
+| 測定の記録 | 測定の記録、連続記録、CSV（結果・生データ）の書き出し |
+| PC ブラウザ用の疑似データ・起動 | Android 以外で開いたときの疑似ビーコンと、起動の処理 |
+
+### ツール（`tools/`）と図面（`map/`）
+
+| ファイル | 役割 |
+|---|---|
+| `map/floor.drawio` | フロアマップの元データ。draw.io で編集する（書き方は「フロアマップの更新方法」） |
+| `tools/drawio_to_map.py` | `floor.drawio` を読み、縮尺を合わせて `app/src/main/assets/map.js` を作る。GitHub Actions のビルドのたびに自動で実行される |
+| `tools/analyze_rssi.py` | 「結果を書き出す（CSV）」の CSV から、距離の式の値（A・n）と、体の向き・向き・障害物ごとの RSSI のずれを求める（使い方は「測定データの分析」） |
+
+### ビルドの設定
+
+| ファイル | 役割 |
+|---|---|
+| `.github/workflows/build-apk.yml` | main に変更が入るたびに、地図データの変換 → APK のビルド → Releases の `latest` への公開を自動で行う |
+| `app/build.gradle.kts` | アプリ ID・SDK・バージョン番号（ビルドの実行番号から `0.1.○`）・署名の設定 |
+| `app/debug.keystore` | どこでビルドしても同じ署名になるようにする検証用のキー（上書きインストールできるように）。ストア公開には使わない |
+| `app/src/main/AndroidManifest.xml` | 使う権限（Bluetooth・位置情報）、BLE が必要なこと、起動する画面 |
+| `app/src/main/res/` | アプリのアイコン・名前・テーマ |
+| `build.gradle.kts` `settings.gradle.kts` `gradle.properties` | プロジェクト全体の設定（Android Gradle Plugin、取得先のリポジトリ、メモリ） |
+| `gradlew` `gradlew.bat` `gradle/wrapper/` | 決まった版の Gradle を自動で取得してビルドするためのファイル |
 
 外部ライブラリは使っていません（Android Gradle Plugin 9.4.1 / Gradle 9.6.0 / Java のみ）。
+
+### 何を変えたいときに、どこを直すか
+
+| 変えたいこと | 直す所 |
+|---|---|
+| 図面（壁・部屋・目的地・ビーコンの位置・案内ルート） | `map/floor.drawio`（`map.js` は直接直さない） |
+| 現在地の求め方・しきい値（引っ張る強さ・歩幅など） | `app.js` の「測位」 |
+| 読み上げの文・案内のタイミング | `app.js` の「案内」 |
+| 画面の表示・ボタン | `index.html`・`app.css`、表示の中身は `app.js` の各タブの区切り |
+| CSV の列 | `app.js` の「測定の記録」（`REC_HEAD`・`recRawCsv`） |
+| BLE の受信・平均のしかた | `BeaconScanner.java` |
+| 歩数の数え方・コンパス | `MainActivity.java` の「歩数（加速度）」「方位」 |
 
 ## iPhone（Beacon Simulator）の設定
 
