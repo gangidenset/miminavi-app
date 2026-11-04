@@ -97,11 +97,14 @@ function placeName(p) {
 const spoken = name => name.replace(/[（(]\s*([^）)]*?)\s*[)）]/g, '$1');
 
 // ------------------------------------------------------------ 状態
+// 図面の上から見た北の向き（右回り °）。事業所の図面では、北は図面の上から右へ約36°
+// （利用者が図面に描いた北の矢印から求めた値。ビーコンタブで変えられる）
+const MAP_NORTH_DEFAULT = 36;
 const st = {
   view: 'home', tab: 'guide', sound: true,
   status: null, beacons: [], others: 0, scanning: false,
   heading: null, pos: null, nav: null, room: null, roomCand: null, roomCandN: 0, near: null, nearCand: null, nearCandN: 0, steps: 0, stepTimes: [], posAge: 0,
-  data: { v: 2, n: 4.0, tx: {}, northOffset: null, assign: {}, uuids: [], moved: {}, beaconH: '', phoneH: '', posMode: 'prox', holdStill: true, pdr: true, stepLen: 0.5 },
+  data: { v: 2, n: 4.0, tx: {}, northOffset: null, assign: {}, uuids: [], moved: {}, beaconH: '', phoneH: '', posMode: 'prox', holdStill: true, pdr: true, stepLen: 0.5, headRef: 'map', mapNorth: MAP_NORTH_DEFAULT },
   browse: false, raw: [],
   placing: null,
 };
@@ -114,6 +117,8 @@ function load() {
       if (d.v === 2 && typeof d.n === 'number') st.data.n = d.n;
       if (d.tx && typeof d.tx === 'object') st.data.tx = d.tx;
       if (typeof d.northOffset === 'number') st.data.northOffset = d.northOffset;
+      if (d.headRef === 'map' || d.headRef === 'calib') st.data.headRef = d.headRef;
+      if (typeof d.mapNorth === 'number' && isFinite(d.mapNorth)) st.data.mapNorth = ((d.mapNorth % 360) + 360) % 360;
       if (d.assign && typeof d.assign === 'object') st.data.assign = d.assign;
       if (d.moved && typeof d.moved === 'object') st.data.moved = d.moved;
       if (d.beaconH != null) st.data.beaconH = String(d.beaconH);
@@ -220,7 +225,12 @@ function onStep(d) {
 //  RSSI の位置は、ずれを直すために少しずつ寄せる（estimate の PDR_RSSI_K）。ビーコンの真横ではしっかり寄せる
 const PDR_TURN_COS = 0.5;   // 向きとルートの方向の差が 60° 以内の方へだけ進む
 const PDR_RSSI_K = 0.25;    // 歩数で進めているとき、RSSI の位置に寄せる割合（0.5秒ごと）
-const mapHeading = () => st.heading != null && st.data.northOffset != null ? (st.heading - st.data.northOffset + 360) % 360 : null;
+// 図面の上を 0° とした向き。向きの基準が「図面の北」なら、コンパスの向き（北が 0°）に図面での北の向きを足す。
+// 「方角合わせ」なら、方角合わせで図面の上を向いたときのコンパスの値を引く
+const usingCalib = () => st.data.headRef === 'calib' && st.data.northOffset != null;
+const mapHeading = () => st.heading == null ? null
+  : usingCalib() ? (st.heading - st.data.northOffset + 360) % 360
+  : st.data.headRef === 'map' ? (st.heading + st.data.mapNorth + 360) % 360 : null;
 const headVec = deg => { const r = deg * Math.PI / 180; return [Math.sin(r), -Math.cos(r)]; };   // 0°=図面の上、90°=右
 const pdrActive = () => st.data.pdr && st.data.posMode !== 'dist' && hasStepSensor() && mapHeading() != null && !!LANES;
 function pdrWhyOff() {
@@ -228,7 +238,7 @@ function pdrWhyOff() {
   if (st.data.posMode === 'dist') return '「距離から計算」では使わない';
   if (!hasStepSensor()) return '歩数を数えられない端末';
   if (st.heading == null) return 'コンパスの値がない';
-  if (st.data.northOffset == null) return '方角合わせをしていない（案内を始めるときの「方角合わせ」で合わせる）';
+  if (mapHeading() == null) return '方角合わせをしていない（案内を始めるときの「方角合わせ」で合わせるか、向きの基準を「図面の北」にする）';
   if (!LANES) return '図面に案内ルートがない';
   return '';
 }
@@ -686,14 +696,32 @@ function buildMap(el, opt = {}) {
   }
   if (opt.dest) s += `<g transform="translate(${P(opt.dest.at)})"><path d="${pinPath(1.4)}" fill="var(--coral)"/><circle cy="${-15 * 1.4 * K}" r="${3.5 * 1.4 * K}" fill="#fff"/></g>`;
   s += `<g class="dyn"></g>`;
+  // 向いている方向の △（図面タブ。現在地の点の外側に置き、向きに合わせて回す）
+  if (!opt.path) {
+    const R = 46 * K, sx = (R * Math.sin(Math.PI / 6)).toFixed(1), sy = (-R * Math.cos(Math.PI / 6)).toFixed(1);
+    s += `<g class="headg" transform="translate(-9999 -9999)">`
+      + `<path d="M0 0 L${-sx} ${sy} A${R} ${R} 0 0 1 ${sx} ${sy} Z" fill="var(--coral)" fill-opacity=".3" stroke="var(--coral)" stroke-width="${1.5 * K}" stroke-opacity=".6"/>`   // 向いている方向の扇（±30°）
+      + `<path d="M0 ${-38 * K} L${7 * K} ${-12 * K} L${-7 * K} ${-12 * K} Z" fill="var(--coral)" stroke="#fff" stroke-width="${2 * K}" stroke-linejoin="round"/></g>`;   // 細長い △
+  }
   if (opt.path) s += `<g class="me" transform="translate(-9999 -9999)"><circle r="${13 * K}" fill="var(--coral)" opacity=".18"/><path d="M0 ${-9 * K} L${7 * K} ${7 * K} L0 ${3 * K} L${-7 * K} ${7 * K} Z" fill="var(--coral)" stroke="#fff" stroke-width="${1.5 * K}" stroke-linejoin="round"/></g>`;
   const ex = (v[0] + v[2]) * U, ey = (v[1] + v[3]) * U;
+  // 北の向き（左上の空いている所）
+  { const cx = v[0] * U + 120, cy = v[1] * U + 130, r = 62;
+    s += `<g transform="translate(${cx} ${cy}) rotate(${st.data.mapNorth})"><circle r="${r}" fill="var(--surface)" stroke="var(--line)" stroke-width="3"/>`
+      + `<path d="M0 ${-r + 10} L20 10 L0 0 L-20 10 Z" fill="var(--slate)"/><text y="${-r - 12}" text-anchor="middle" font-family="var(--f-mono)" font-size="40" font-weight="700" fill="var(--ink)">N</text></g>`; }
   s += `<text x="${ex - 20}" y="${ey - 20}" text-anchor="end" font-family="var(--f-mono)" font-size="26" fill="var(--muted)">↑図面の上　━ 1m</text>`;
   s += `<line x1="${ex - 120}" y1="${ey - 50}" x2="${ex - 20}" y2="${ey - 50}" stroke="var(--muted)" stroke-width="6"/></svg>`;
   el.innerHTML = s;
   el.dataset.nav = opt.path ? '1' : '';
   el.style.setProperty('--map-ratio', (vw / vh).toFixed(3));
   updateDyn(el);
+}
+// 図面タブの △ を、現在地の位置・向いている方向に合わせる（方角合わせをしていないときは出さない）
+function placeHeading(el) {
+  const g = el && el.querySelector('.headg'); if (!g) return;
+  const h = mapHeading();
+  if (!st.pos || h == null) { g.setAttribute('transform', 'translate(-9999 -9999)'); return; }
+  g.setAttribute('transform', `translate(${(st.pos.x * U).toFixed(1)} ${(st.pos.y * U).toFixed(1)}) rotate(${h.toFixed(0)})`);
 }
 // 地図ピン（先端が原点）
 function pinPath(scale) {
@@ -723,6 +751,7 @@ function updateDyn(el) {
     s += `<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="${(Math.max(0.3, Math.min(st.pos.acc, 4)) * U).toFixed(1)}" fill="var(--coral)" opacity=".15"/>`;
     s += `<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="${7 * K}" fill="var(--coral)" stroke="#fff" stroke-width="${2 * K}"/>`;
   }
+  placeHeading(el);
   const rp = recPosOf(rec.form);
   if (rp && el.id === 'planMap' && rp.label.startsWith('図面')) {
     const [mx, my] = [rp.at[0] * U, rp.at[1] * U], k = 8 * K;
@@ -789,13 +818,15 @@ $('start').onclick = () => { show('calib'); say('ミミナビを起動しまし�
 const COMPASS = ['北', '北東', '東', '南東', '南', '南西', '西', '北西'];
 function onHeading(deg) {
   st.heading = deg;
+  if (st.view === 'plan') placeHeading($('planMap'));
+  if (st.view === 'nav' && st.nav && !st.nav.sim && st.pos && mapHeading() != null) placeMeAt([st.pos.x, st.pos.y], mapHeading());
   if (st.view === 'calib') {
     $('needle').style.transform = `rotate(${deg}deg)`;
     $('headingTxt').textContent = `方位 ${deg}°（${COMPASS[Math.round(deg / 45) % 8]}）`;
   }
 }
 $('calibBtn').onclick = () => {
-  if (st.heading != null) { st.data.northOffset = st.heading; save(); }
+  if (st.heading != null) { st.data.northOffset = st.heading; st.data.headRef = 'calib'; save(); }   // 方角合わせをしたら、その値を使う
   say('向きを合わせました。行き先を話してください。');
   toListen();
 };
@@ -993,8 +1024,8 @@ function startNav(dest, opts = {}) {
   $('remain').textContent = `残り ${metersTxt(total)}`;
   const first = segs[0];
   let lead = `${DNAME[first.d]}方向に`;
-  if (st.heading != null && st.data.northOffset != null) {
-    const mapHead = (st.heading - st.data.northOffset + 360) % 360;
+  if (mapHeading() != null) {
+    const mapHead = mapHeading();
     const diff = ((first.d * 90 - mapHead + 540) % 360) - 180;
     const w = Math.abs(diff) < 45 ? '正面' : diff > 0 && diff < 135 ? '右' : diff < 0 && diff > -135 ? '左' : '後ろ';
     lead = w === '正面' ? '正面に' : `${w}を向いて、`;
@@ -1009,11 +1040,12 @@ function updateSrcChip() {
   else if (st.pos) { c.textContent = `BLE 屋内測位（${st.pos.used.length}台）`; c.className = 'chip'; }
   else { c.textContent = 'BLE 受信待ち'; c.className = 'chip off'; }
 }
-function placeMeAt(p, d) {
+// 案内画面の現在地の矢印。deg は図面の上を 0° とした向き
+function placeMeAt(p, deg) {
   const g = $('navMap').querySelector('.me'); if (!g) return;
-  g.setAttribute('transform', `translate(${(p[0] * U).toFixed(1)} ${(p[1] * U).toFixed(1)}) rotate(${d * 90})`);
+  g.setAttribute('transform', `translate(${(p[0] * U).toFixed(1)} ${(p[1] * U).toFixed(1)}) rotate(${Math.round(deg)})`);
 }
-const placeMeCell = (c, d) => placeMeAt(cellCenter(c), d);
+const placeMeCell = (c, d) => placeMeAt(cellCenter(c), d * 90);
 const segIndexAt = i => { const segs = st.nav.segs; for (let k = 0; k < segs.length; k++) if (i > segs[k].startIdx && i <= segs[k].startIdx + segs[k].n) return k; return segs.length - 1; };
 
 // path[i] に着いたときの案内
@@ -1069,7 +1101,9 @@ function navRealUpdate() {
   updateSrcChip();
   if (!st.pos) return;
   const pos = [st.pos.x, st.pos.y];
-  placeMeAt(pos, nav.segs[segIndexAt(Math.max(1, nav.idx))].d);
+  // 矢印は向いている方向（方角合わせをしていなければ、ルートの進む方向）
+  const h = mapHeading();
+  placeMeAt(pos, h != null ? h : nav.segs[segIndexAt(Math.max(1, nav.idx))].d * 90);
   // 到着：条件を満たす状態が約1.5秒（3回）続いたら
   nav.arriveN = atDest(nav.dest) ? (nav.arriveN || 0) + 1 : 0;
   if (nav.arriveN >= 3) { advance(nav.path.length - 1); return; }
@@ -1140,6 +1174,8 @@ function renderPlan(full) {
   $('planPos').textContent = st.pos
     ? `x ${st.pos.x.toFixed(1)}m, y ${st.pos.y.toFixed(1)}m（${placeName([st.pos.x, st.pos.y])}付近・誤差 約${st.pos.acc.toFixed(1)}m）${st.room ? `／部屋：${roomName(st.room.name)}` : ''}`
     : '—（図面のビーコンを受信していません）';
+  $('planHead').textContent = mapHeading() != null ? `図面の上から ${Math.round(mapHeading())}°（図面の △ の向き・基準：${usingCalib() ? '方角合わせ' : `図面の北 ${st.data.mapNorth}°`}）`
+    : st.heading == null ? 'コンパスの値がありません' : '方角合わせをすると、図面に向き（△）が出ます（案内タブ →「この施設で案内を始める」→ 方角合わせ）。ビーコンタブで向きの基準を「図面の北」にしても出ます';
   $('planWalk').textContent = !hasStepSensor() ? '歩数センサーなし（止まっていても位置を固定しない）'
     : `${walkLabel()}（歩数 ${st.steps}）${st.pos && st.pos.still ? '・位置をほぼ固定中' : ''}${pdrActive() ? `・歩数で進める（歩幅 ${st.data.stepLen}m・向き ${Math.round(mapHeading())}°${st.pdrLast === 'turn' ? '・ルートの方向を向いていないので止める' : ''}）` : ''}`;
   $('planUsed').textContent = !st.pos ? '—'
@@ -1251,6 +1287,11 @@ function renderBeacons() {
   $('posMode').value = st.data.posMode;
   $('holdStill').checked = st.data.holdStill;
   $('pdrOn').checked = st.data.pdr;
+  $('headRef').value = st.data.headRef;
+  if (document.activeElement !== $('mapNorth')) $('mapNorth').value = st.data.mapNorth;
+  $('headNote').textContent = st.heading == null ? 'コンパスの値がありません。'
+    : st.data.headRef === 'calib' && st.data.northOffset == null ? 'まだ方角合わせをしていません（案内を始めるときの「方角合わせ」で合わせる）。'
+    : `今の向き：図面の上から ${Math.round(mapHeading())}°（コンパス ${Math.round(st.heading)}°）`;
   if (document.activeElement !== $('stepLen')) $('stepLen').value = st.data.stepLen;
   $('pdrState').textContent = pdrActive() ? `使用中：図面の上から ${Math.round(mapHeading())}° の向き` : `使っていない：${pdrWhyOff()}`;
   $('walkState').textContent = hasStepSensor() ? `今：${walkLabel()}（歩数 ${st.steps}）` : 'この端末では歩数を数えられないため、使いません。';
@@ -1388,6 +1429,12 @@ $('nRange').addEventListener('input', e => { st.data.n = Number(e.target.value);
 // 現在地の求め方（近接型／距離から3点測位）
 $('posMode').addEventListener('change', e => { st.data.posMode = e.target.value; save(); estimate(); renderPlan(true); });
 $('holdStill').addEventListener('change', e => { st.data.holdStill = e.target.checked; save(); });
+$('headRef').addEventListener('change', e => { st.data.headRef = e.target.value; save(); renderBeacons(); });
+$('mapNorth').addEventListener('change', e => {
+  const v = parseFloat(String(e.target.value).replace(',', '.'));
+  if (isFinite(v)) { st.data.mapNorth = Math.round(((v % 360) + 360) % 360); save(); if ($('planMap').querySelector('svg')) buildMap($('planMap'), { allDests: true, small: true }); }
+  e.target.value = st.data.mapNorth;
+});
 $('pdrOn').addEventListener('change', e => { st.data.pdr = e.target.checked; save(); });
 $('stepLen').addEventListener('change', e => {
   const v = parseFloat(String(e.target.value).replace(',', '.'));
