@@ -226,6 +226,10 @@ function onStep(d) {
 //  RSSI の位置は、ずれを直すために少しずつ寄せる（estimate の PDR_RSSI_K）。ビーコンの真横ではしっかり寄せる
 const PDR_TURN_COS = 0.5;   // 向きとルートの方向の差が 60° 以内の方へだけ進む
 const PDR_RSSI_K = 0.25;    // 歩数で進めているとき、RSSI の位置に寄せる割合（0.5秒ごと）
+// コンパスの値がないときの説明
+const compassMissing = () => !N ? 'PC ブラウザではコンパスを使えません'
+  : st.status && st.status.compass === 'none' ? 'この端末にはコンパス（地磁気センサー）がありません'
+  : 'コンパスの値を待っています（スマホを少し動かしてください。続くときはアプリを開き直してください）';
 // 図面の上を 0° とした向き。向きの基準が「図面の北」なら、コンパスの向き（北が 0°）に図面での北の向きを足す。
 // 「方角合わせ」なら、方角合わせで図面の上を向いたときのコンパスの値を引く
 const usingCalib = () => st.data.headRef === 'calib' && st.data.northOffset != null;
@@ -238,7 +242,7 @@ function pdrWhyOff() {
   if (!st.data.pdr) return 'オフ';
   if (st.data.posMode === 'dist') return '「距離から計算」では使わない';
   if (!hasStepSensor()) return '歩数を数えられない端末';
-  if (st.heading == null) return 'コンパスの値がない';
+  if (st.heading == null) return compassMissing();
   if (mapHeading() == null) return '方角合わせをしていない（案内を始めるときの「方角合わせ」で合わせるか、向きの基準を「図面の北」にする）';
   if (!LANES) return '図面に案内ルートがない';
   return '';
@@ -1190,7 +1194,7 @@ function renderPlan(full) {
     ? `x ${st.pos.x.toFixed(1)}m, y ${st.pos.y.toFixed(1)}m（${placeName([st.pos.x, st.pos.y])}付近・誤差 約${st.pos.acc.toFixed(1)}m）${st.room ? `／部屋：${roomName(st.room.name)}` : ''}`
     : '—（図面のビーコンを受信していません）';
   $('planHead').textContent = mapHeading() != null ? `図面の上から ${Math.round(mapHeading())}°（図面の △ の向き・基準：${usingCalib() ? '方角合わせ' : `図面の北 ${st.data.mapNorth}°`}）`
-    : st.heading == null ? 'コンパスの値がありません' : '方角合わせをすると、図面に向き（△）が出ます（案内タブ →「この施設で案内を始める」→ 方角合わせ）。ビーコンタブで向きの基準を「図面の北」にしても出ます';
+    : st.heading == null ? compassMissing() : '方角合わせをすると、図面に向き（△）が出ます（案内タブ →「この施設で案内を始める」→ 方角合わせ）。ビーコンタブで向きの基準を「図面の北」にしても出ます';
   const pl = st.pos && st.pos.pull;
   $('planPull').textContent = !st.data.pull ? 'オフ' : pl && pl.to ? `${pl.to.mb.label} の方へ ${Math.round(pl.w * 100)}%（最大 ${st.data.pull}%）` : '引っ張っていない（2台が同じくらいの強さ）';
   $('planWalk').textContent = !hasStepSensor() ? '歩数センサーなし（止まっていても位置を固定しない）'
@@ -1307,7 +1311,7 @@ function renderBeacons() {
   if (document.activeElement !== $('pullPct')) $('pullPct').value = st.data.pull;
   $('headRef').value = st.data.headRef;
   if (document.activeElement !== $('mapNorth')) $('mapNorth').value = st.data.mapNorth;
-  $('headNote').textContent = st.heading == null ? 'コンパスの値がありません。'
+  $('headNote').textContent = st.heading == null ? compassMissing() + '。'
     : st.data.headRef === 'calib' && st.data.northOffset == null ? 'まだ方角合わせをしていません（案内を始めるときの「方角合わせ」で合わせる）。'
     : `今の向き：図面の上から ${Math.round(mapHeading())}°（コンパス ${Math.round(st.heading)}°）`;
   if (document.activeElement !== $('stepLen')) $('stepLen').value = st.data.stepLen;

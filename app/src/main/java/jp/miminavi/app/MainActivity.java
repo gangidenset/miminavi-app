@@ -142,12 +142,26 @@ public class MainActivity extends Activity implements BeaconScanner.Listener, Se
     @Override
     protected void onResume() {
         super.onResume();
-        Sensor rv = sensors == null ? null : sensors.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
-        if (rv != null) sensors.registerListener(this, rv, SensorManager.SENSOR_DELAY_UI);
         // 歩数：加速度センサーから数える（権限がいらない）
         Sensor acc = sensors == null ? null : sensors.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
         stepSensor = acc != null;
         if (acc != null) sensors.registerListener(this, acc, SensorManager.SENSOR_DELAY_GAME);
+        // 方位：回転ベクトル（地磁気＋ジャイロ）→ 地磁気の回転ベクトル → 地磁気＋加速度 の順で、端末にあるものを使う
+        compass = "none";
+        hasGrav = hasGeo = false;
+        lastHeadingAt = 0;
+        Sensor rv = sensors == null ? null : sensors.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
+        if (rv != null) compass = "rotation";
+        else if (sensors != null && (rv = sensors.getDefaultSensor(Sensor.TYPE_GEOMAGNETIC_ROTATION_VECTOR)) != null) compass = "geomagnetic";
+        if (rv != null) sensors.registerListener(this, rv, SensorManager.SENSOR_DELAY_UI);
+        else {
+            Sensor mag = sensors == null ? null : sensors.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD);
+            if (mag != null && acc != null) {
+                compass = "magnetic";
+                sensors.registerListener(this, mag, SensorManager.SENSOR_DELAY_UI);
+            }
+        }
+        sendStatus();
     }
 
     @Override
@@ -300,6 +314,7 @@ public class MainActivity extends Activity implements BeaconScanner.Listener, Se
             o.put("tts", ttsReady);
             o.put("error", lastError);
             o.put("stepSensor", stepSensor);
+            o.put("compass", compass);
             o.put("model", Build.MANUFACTURER + " " + Build.MODEL + " / Android " + Build.VERSION.RELEASE);
             js("status", o.toString());
         } catch (Exception ignored) { }
@@ -327,19 +342,50 @@ public class MainActivity extends Activity implements BeaconScanner.Listener, Se
     // ---------------------------------------------------------------- 方位（地磁気＋ジャイロ）
 
     private final float[] rot = new float[9];
+    private final float[] rotUp = new float[9];
     private final float[] ori = new float[3];
+    private final float[] grav = new float[3];
+    private final float[] geo = new float[3];
+    private boolean hasGrav = false, hasGeo = false;
+    private String compass = "none";   // rotation | geomagnetic | magnetic | none
 
     @Override
     public void onSensorChanged(SensorEvent event) {
-        if (event.sensor.getType() == Sensor.TYPE_ACCELEROMETER) { onAccel(event.values); return; }
-        SensorManager.getRotationMatrixFromVector(rot, event.values);
-        SensorManager.getOrientation(rot, ori);
+        int type = event.sensor.getType();
+        if (type == Sensor.TYPE_ACCELEROMETER) {
+            onAccel(event.values);
+            if ("magnetic".equals(compass)) {   // 重力の向き（なめらかにする）
+                for (int i = 0; i < 3; i++) grav[i] = hasGrav ? grav[i] + 0.2f * (event.values[i] - grav[i]) : event.values[i];
+                hasGrav = true;
+            }
+            return;
+        }
+        if (type == Sensor.TYPE_MAGNETIC_FIELD) {
+            for (int i = 0; i < 3; i++) geo[i] = hasGeo ? geo[i] + 0.3f * (event.values[i] - geo[i]) : event.values[i];
+            hasGeo = true;
+            if (!hasGrav || !SensorManager.getRotationMatrix(rot, null, grav, geo)) return;
+        } else {
+            SensorManager.getRotationMatrixFromVector(rot, event.values);
+        }
+        onRotation();
+    }
+
+    // 向いている方向：寝かせて持っているときはスマホの上端の向き、立てて持っているとき（45°以上）は背面（カメラ）の向き。
+    // 胸の前で持てば、どちらも体の前の向きになる（立てたまま上端の向きを使うと、値が大きく乱れるため）
+    private void onRotation() {
+        float[] r = rot;
+        if (Math.abs(rot[8]) < 0.707f) {
+            SensorManager.remapCoordinateSystem(rot, SensorManager.AXIS_X, SensorManager.AXIS_Z, rotUp);
+            r = rotUp;
+        }
+        SensorManager.getOrientation(r, ori);
         float deg = (float) Math.toDegrees(ori[0]);
         if (deg < 0) deg += 360;
         long now = SystemClock.elapsedRealtime();
         float diff = Math.abs(deg - lastHeading);
         if (diff > 180) diff = 360 - diff;
-        if (diff >= 2 && now - lastHeadingAt >= 150) {
+        // 2° 以上変わったら送る。変わらなくても 1 秒ごとに送る（画面の準備ができる前に送った値が届かないことがあるため）
+        if ((diff >= 2 && now - lastHeadingAt >= 150) || now - lastHeadingAt >= 1000) {
             lastHeading = deg;
             lastHeadingAt = now;
             js("heading", String.valueOf(Math.round(deg)));
