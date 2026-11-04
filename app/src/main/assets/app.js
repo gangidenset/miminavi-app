@@ -100,7 +100,7 @@ const spoken = name => name.replace(/[（(]\s*([^）)]*?)\s*[)）]/g, '$1');
 const st = {
   view: 'home', tab: 'guide', sound: true,
   status: null, beacons: [], others: 0, scanning: false,
-  heading: null, pos: null, nav: null, room: null, roomCand: null, roomCandN: 0,
+  heading: null, pos: null, nav: null, room: null, roomCand: null, roomCandN: 0, near: null, nearCand: null, nearCandN: 0,
   data: { v: 2, n: 4.0, tx: {}, northOffset: null, assign: {}, uuids: [], moved: {}, beaconH: '', phoneH: '', posMode: 'prox' },
   browse: false, raw: [],
   placing: null,
@@ -310,13 +310,17 @@ function decideRoom(all) {
 //  d は各ビーコンまでの推定距離（d = 10^((A − RSSI) ÷ (10 × n))）
 function estimate() {
   const all = [...seenByLabel().values()].sort((a, c) => a.d - c.d);
-  if (!all.length) { st.pos = null; st.room = null; return; }
+  if (!all.length) { st.pos = null; st.room = null; st.near = null; st.nearCand = null; return; }
   const prevRoom = st.room;
   decideRoom(all);   // 今いる部屋（到着判定に使う）
   let used = all.slice(0, 3), prox = null;
   const prev = st.pos ? st.pos.raw : null;
   let p, method;
-  if (st.data.posMode !== 'dist') { prox = proximity(all); p = prox.p; used = prox.used; method = `近接型（${used.length}台）`; }
+  if (st.data.posMode !== 'dist') {
+    prox = proximity(all); p = prox.p; used = prox.used; method = `近接型（${used.length}台）`;
+    const nb = decideNear(all);   // ビーコンの真横にいるときは、そのビーコンの点に引っ張る
+    if (nb) { p = laneAnchor(nb.mb.at); used = [nb]; prox.near = nb; method = `近接型（${nb.mb.label} のそば）`; }
+  }
   else if (used.length === 1) { p = onePoint(used[0], prev); method = '1点測位'; }
   else if (used.length === 2) { p = twoPoint(used[0], used[1], prev); method = '2点測位'; }
   else { const r = threePoint(used, prev); p = r.p; method = r.ls ? '3点測位（最小二乗）' : '3点測位'; }
@@ -352,6 +356,26 @@ function proximity(all) {
   const diff = strength(u1) - strength(u2);
   const f = 1 / (1 + Math.pow(10, diff / PROX_SLOPE_DB));
   return { p: alongPts(lanePathPts(a1, laneAnchor(u2.mb.at)), f), used: [u1, u2], f, diff };
+}
+// ビーコンの真横（約1m以内）にいるかの判定。距離は不正確でも、1m以内ならはっきり強くなる（実測：1m −56、2m以上 −60以下）
+//  なる条件：1m地点の強さ − NEAR_ENTER_DB 以上で、2番目より NEAR_LEAD_DB 以上強い状態が NEAR_COUNT 回（0.5秒ごと）続く
+//  やめる条件：1m地点の強さ − NEAR_EXIT_DB を下回るか、2番目との差が NEAR_HOLD_DB を下回る（すぐに出入りしないよう、なる条件よりゆるい）
+//  1m地点の強さは「1mで補正」した値。補正していなければ実測の平均 NEAR_1M_DEFAULT を使う
+//  （距離の式の標準値 −45 は距離の当てはめ用の値で、実際の 1m 地点の強さとは違うため）
+const NEAR_1M_DEFAULT = -55, NEAR_ENTER_DB = 3, NEAR_EXIT_DB = 5, NEAR_LEAD_DB = 3, NEAR_HOLD_DB = 1, NEAR_COUNT = 2;
+const oneMeterOf = label => typeof st.data.tx[label] === 'number' ? st.data.tx[label] : NEAR_1M_DEFAULT;
+function decideNear(all) {
+  const s = all.slice().sort((a, c) => strength(c) - strength(a));
+  const top = s[0], lead = s[1] ? strength(top) - strength(s[1]) : 99;
+  const over = top.b.rssi - oneMeterOf(top.mb.label);
+  if (st.near === top.mb.label && over >= -NEAR_EXIT_DB && lead >= NEAR_HOLD_DB) return top;   // そのまま続ける
+  st.near = null;
+  if (over >= -NEAR_ENTER_DB && lead >= NEAR_LEAD_DB) {
+    st.nearCandN = st.nearCand === top.mb.label ? st.nearCandN + 1 : 1;
+    st.nearCand = top.mb.label;
+    if (st.nearCandN >= NEAR_COUNT) { st.near = top.mb.label; st.nearCand = null; return top; }
+  } else st.nearCand = null;
+  return null;
 }
 // ビーコンの位置から、案内ルートでいちばん近い点（案内ルートがない図面ではビーコンの位置）
 function laneAnchor(at) {
@@ -1019,6 +1043,7 @@ function renderPlan(full) {
     ? `x ${st.pos.x.toFixed(1)}m, y ${st.pos.y.toFixed(1)}m（${placeName([st.pos.x, st.pos.y])}付近・誤差 約${st.pos.acc.toFixed(1)}m）${st.room ? `／部屋：${roomName(st.room.name)}` : ''}`
     : '—（図面のビーコンを受信していません）';
   $('planUsed').textContent = !st.pos ? '—'
+    : st.pos.prox && st.pos.prox.near ? `${st.pos.method}：${st.pos.prox.near.mb.label} ${Math.round(st.pos.prox.near.b.rssi)}dBm（1m地点 ${oneMeterOf(st.pos.prox.near.mb.label)}dBm${typeof st.data.tx[st.pos.prox.near.mb.label] === 'number' ? '・補正' : '・標準'}${st.pos.prox.diff != null ? `、2番目より ${st.pos.prox.diff.toFixed(1)}dB 強い` : ''}）`
     : st.pos.prox ? `${st.pos.method}：` + st.pos.used.map(u => `${u.mb.label} ${Math.round(u.b.rssi)}dBm`).join(' / ')
       + (st.pos.prox.diff != null ? `（差 ${st.pos.prox.diff.toFixed(1)}dB → ${st.pos.used[0].mb.label} から ${st.pos.used[1].mb.label} へ ${Math.round(st.pos.prox.f * 100)}% の所）` : '（そのビーコンのそば）')
     : `${st.pos.method}：` + st.pos.used.map(u => `${u.mb.label} ${u.d.toFixed(1)}m`).join(' / ') + (st.pos.used.some(u => Math.abs(u.d - u.ds) > 0.005) ? '（高さ補正後の床の上の距離）' : '');
@@ -1662,5 +1687,5 @@ if (N) {
   startMock();
 }
 // テスト用
-window.__mimi = { proximity, lanePathPts, laneAnchor, BEACONS, route, segments, matchDest, DESTS, ENTRY, st, startNav, doorsOnPath, atDest, roomAt, estimate, rec };
+window.__mimi = { proximity, decideNear, lanePathPts, laneAnchor, BEACONS, route, segments, matchDest, DESTS, ENTRY, st, startNav, doorsOnPath, atDest, roomAt, estimate, rec };
 })();
