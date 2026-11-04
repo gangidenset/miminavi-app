@@ -179,6 +179,7 @@ button:focus-visible,input:focus-visible{outline:3px solid var(--coral);outline-
 .check{display:flex;align-items:center;gap:8px;font-size:13px;margin:4px 0}
 .check input{width:18px;height:18px;accent-color:var(--teal, #1a9a8a)}
 .posmode{display:flex;flex-direction:column;gap:4px;margin-bottom:10px;font-size:13px}
+.posmode input{border:1.5px solid var(--line);border-radius:10px;padding:6px 8px;background:var(--surface);color:var(--ink);font:inherit;font-size:13px;width:100%;min-width:0}
 .posmode select{border:1.5px solid var(--line);border-radius:10px;padding:6px 8px;background:var(--surface);color:var(--ink);font:inherit;font-size:13px;width:100%;min-width:0}
 .recper .perrow input,.recper .perrow select{padding:5px 4px;font-size:12px}
 .recper .pertitle{margin:6px 0 0;font-size:12px;font-weight:700;color:var(--ink)}
