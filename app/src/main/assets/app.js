@@ -104,7 +104,7 @@ const st = {
   view: 'home', tab: 'guide', sound: true,
   status: null, beacons: [], others: 0, scanning: false,
   heading: null, pos: null, nav: null, room: null, roomCand: null, roomCandN: 0, near: null, nearCand: null, nearCandN: 0, steps: 0, stepTimes: [], posAge: 0,
-  data: { v: 2, n: 4.0, tx: {}, northOffset: null, assign: {}, uuids: [], moved: {}, beaconH: '', phoneH: '', posMode: 'prox', holdStill: true, pdr: true, stepLen: 0.5, headRef: 'map', mapNorth: MAP_NORTH_DEFAULT },
+  data: { v: 2, n: 4.0, tx: {}, northOffset: null, assign: {}, uuids: [], moved: {}, beaconH: '', phoneH: '', posMode: 'prox', holdStill: true, pdr: true, stepLen: 0.5, headRef: 'map', mapNorth: MAP_NORTH_DEFAULT, pull: 30 },
   browse: false, raw: [],
   placing: null,
 };
@@ -118,6 +118,7 @@ function load() {
       if (d.tx && typeof d.tx === 'object') st.data.tx = d.tx;
       if (typeof d.northOffset === 'number') st.data.northOffset = d.northOffset;
       if (d.headRef === 'map' || d.headRef === 'calib') st.data.headRef = d.headRef;
+      if (typeof d.pull === 'number' && d.pull >= 0 && d.pull <= 100) st.data.pull = d.pull;
       if (typeof d.mapNorth === 'number' && isFinite(d.mapNorth)) st.data.mapNorth = ((d.mapNorth % 360) + 360) % 360;
       if (d.assign && typeof d.assign === 'object') st.data.assign = d.assign;
       if (d.moved && typeof d.moved === 'object') st.data.moved = d.moved;
@@ -225,6 +226,10 @@ function onStep(d) {
 //  RSSI の位置は、ずれを直すために少しずつ寄せる（estimate の PDR_RSSI_K）。ビーコンの真横ではしっかり寄せる
 const PDR_TURN_COS = 0.5;   // 向きとルートの方向の差が 60° 以内の方へだけ進む
 const PDR_RSSI_K = 0.25;    // 歩数で進めているとき、RSSI の位置に寄せる割合（0.5秒ごと）
+// コンパスの値がないときの説明
+const compassMissing = () => !N ? 'PC ブラウザではコンパスを使えません'
+  : st.status && st.status.compass === 'none' ? 'この端末にはコンパス（地磁気センサー）がありません'
+  : 'コンパスの値を待っています（スマホを少し動かしてください。続くときはアプリを開き直してください）';
 // 図面の上を 0° とした向き。向きの基準が「図面の北」なら、コンパスの向き（北が 0°）に図面での北の向きを足す。
 // 「方角合わせ」なら、方角合わせで図面の上を向いたときのコンパスの値を引く
 const usingCalib = () => st.data.headRef === 'calib' && st.data.northOffset != null;
@@ -237,7 +242,7 @@ function pdrWhyOff() {
   if (!st.data.pdr) return 'オフ';
   if (st.data.posMode === 'dist') return '「距離から計算」では使わない';
   if (!hasStepSensor()) return '歩数を数えられない端末';
-  if (st.heading == null) return 'コンパスの値がない';
+  if (st.heading == null) return compassMissing();
   if (mapHeading() == null) return '方角合わせをしていない（案内を始めるときの「方角合わせ」で合わせるか、向きの基準を「図面の北」にする）';
   if (!LANES) return '図面に案内ルートがない';
   return '';
@@ -426,6 +431,7 @@ function estimate() {
   else if (used.length === 1) { p = onePoint(used[0], prev); method = '1点測位'; }
   else if (used.length === 2) { p = twoPoint(used[0], used[1], prev); method = '2点測位'; }
   else { const r = threePoint(used, prev); p = r.p; method = r.ls ? '3点測位（最小二乗）' : '3点測位'; }
+  const pull = pullToStrongest(all, p); p = pull.p;
   // 前回となめらかにつなぐ（部屋が変わったときはそのまま移る）
   // 止まっているときは、部屋が変わっても、ビーコンの真横に引っ張るときも、少しずつしか動かさない（約10秒で追いつく）
   // 歩数で進めているときは、RSSI の位置には少しずつ寄せる（ビーコンの真横ではしっかり寄せる）
@@ -445,7 +451,7 @@ function estimate() {
   }
   if (!cell) cell = nearestFree(raw);
   const [px, py] = (st.nav && !st.nav.sim) || LANES ? cellCenter(cell) : raw;
-  st.pos = { x: px, y: py, raw, acc: used[0].d, used, all, cell, room: st.room, method, prox, still,
+  st.pos = { x: px, y: py, raw, acc: used[0].d, used, all, cell, room: st.room, method, prox, still, pull,
              pathIdx, path: st.nav && !st.nav.sim ? st.nav.path : null };
 }
 // 近接型
@@ -484,6 +490,19 @@ function decideNear(all) {
     if (st.nearCandN >= NEAR_COUNT) { st.near = top.mb.label; st.nearCand = null; return top; }
   } else st.nearCand = null;
   return null;
+}
+// いちばん強いビーコンの方へ、いつも少し引っ張る（どの求め方でも）
+//  引っ張る割合 w = 最大の割合 × min(1, 2番目との差 ÷ PULL_FULL_DB)。差 0dB（同じくらいの強さ）なら引っ張らない。
+//  受信が1台だけなら最大の割合。引っ張る先は、そのビーコンの案内ルート上の点（案内ルートがなければビーコンの位置）
+const PULL_FULL_DB = 10;   // 2番目との差がこの dB 以上で、最大の割合で引っ張る
+function pullToStrongest(all, p) {
+  const max = (st.data.pull || 0) / 100;
+  const s = all.slice().sort((a, c) => strength(c) - strength(a)), top = s[0];
+  const lead = s[1] ? strength(top) - strength(s[1]) : PULL_FULL_DB;
+  const w = max * Math.min(1, Math.max(0, lead) / PULL_FULL_DB);
+  if (!top || w <= 0) return { p, w: 0, to: null };
+  const a = laneAnchor(top.mb.at);
+  return { p: [p[0] + w * (a[0] - p[0]), p[1] + w * (a[1] - p[1])], w, to: top };
 }
 // ビーコンの位置から、案内ルートでいちばん近い点（案内ルートがない図面ではビーコンの位置）
 function laneAnchor(at) {
@@ -1175,7 +1194,9 @@ function renderPlan(full) {
     ? `x ${st.pos.x.toFixed(1)}m, y ${st.pos.y.toFixed(1)}m（${placeName([st.pos.x, st.pos.y])}付近・誤差 約${st.pos.acc.toFixed(1)}m）${st.room ? `／部屋：${roomName(st.room.name)}` : ''}`
     : '—（図面のビーコンを受信していません）';
   $('planHead').textContent = mapHeading() != null ? `図面の上から ${Math.round(mapHeading())}°（図面の △ の向き・基準：${usingCalib() ? '方角合わせ' : `図面の北 ${st.data.mapNorth}°`}）`
-    : st.heading == null ? 'コンパスの値がありません' : '方角合わせをすると、図面に向き（△）が出ます（案内タブ →「この施設で案内を始める」→ 方角合わせ）。ビーコンタブで向きの基準を「図面の北」にしても出ます';
+    : st.heading == null ? compassMissing() : '方角合わせをすると、図面に向き（△）が出ます（案内タブ →「この施設で案内を始める」→ 方角合わせ）。ビーコンタブで向きの基準を「図面の北」にしても出ます';
+  const pl = st.pos && st.pos.pull;
+  $('planPull').textContent = !st.data.pull ? 'オフ' : pl && pl.to ? `${pl.to.mb.label} の方へ ${Math.round(pl.w * 100)}%（最大 ${st.data.pull}%）` : '引っ張っていない（2台が同じくらいの強さ）';
   $('planWalk').textContent = !hasStepSensor() ? '歩数センサーなし（止まっていても位置を固定しない）'
     : `${walkLabel()}（歩数 ${st.steps}）${st.pos && st.pos.still ? '・位置をほぼ固定中' : ''}${pdrActive() ? `・歩数で進める（歩幅 ${st.data.stepLen}m・向き ${Math.round(mapHeading())}°${st.pdrLast === 'turn' ? '・ルートの方向を向いていないので止める' : ''}）` : ''}`;
   $('planUsed').textContent = !st.pos ? '—'
@@ -1287,9 +1308,10 @@ function renderBeacons() {
   $('posMode').value = st.data.posMode;
   $('holdStill').checked = st.data.holdStill;
   $('pdrOn').checked = st.data.pdr;
+  if (document.activeElement !== $('pullPct')) $('pullPct').value = st.data.pull;
   $('headRef').value = st.data.headRef;
   if (document.activeElement !== $('mapNorth')) $('mapNorth').value = st.data.mapNorth;
-  $('headNote').textContent = st.heading == null ? 'コンパスの値がありません。'
+  $('headNote').textContent = st.heading == null ? compassMissing() + '。'
     : st.data.headRef === 'calib' && st.data.northOffset == null ? 'まだ方角合わせをしていません（案内を始めるときの「方角合わせ」で合わせる）。'
     : `今の向き：図面の上から ${Math.round(mapHeading())}°（コンパス ${Math.round(st.heading)}°）`;
   if (document.activeElement !== $('stepLen')) $('stepLen').value = st.data.stepLen;
@@ -1434,6 +1456,11 @@ $('mapNorth').addEventListener('change', e => {
   const v = parseFloat(String(e.target.value).replace(',', '.'));
   if (isFinite(v)) { st.data.mapNorth = Math.round(((v % 360) + 360) % 360); save(); if ($('planMap').querySelector('svg')) buildMap($('planMap'), { allDests: true, small: true }); }
   e.target.value = st.data.mapNorth;
+});
+$('pullPct').addEventListener('change', e => {
+  const v = parseFloat(String(e.target.value).replace(',', '.'));
+  if (isFinite(v) && v >= 0 && v <= 100) { st.data.pull = Math.round(v); save(); estimate(); }
+  e.target.value = st.data.pull;
 });
 $('pdrOn').addEventListener('change', e => { st.data.pdr = e.target.checked; save(); });
 $('stepLen').addEventListener('change', e => {
@@ -1846,5 +1873,5 @@ if (N) {
   startMock();
 }
 // テスト用
-window.__mimi = { proximity, decideNear, onStep, isWalking, pdrActive, stepOnLanes, stepOnPath, lanePathPts, laneAnchor, BEACONS, route, segments, matchDest, DESTS, ENTRY, st, startNav, doorsOnPath, atDest, roomAt, estimate, rec };
+window.__mimi = { pullToStrongest, proximity, decideNear, onStep, isWalking, pdrActive, stepOnLanes, stepOnPath, lanePathPts, laneAnchor, BEACONS, route, segments, matchDest, DESTS, ENTRY, st, startNav, doorsOnPath, atDest, roomAt, estimate, rec };
 })();
