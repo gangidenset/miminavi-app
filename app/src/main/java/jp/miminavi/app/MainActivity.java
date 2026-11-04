@@ -144,6 +144,10 @@ public class MainActivity extends Activity implements BeaconScanner.Listener, Se
         super.onResume();
         Sensor rv = sensors == null ? null : sensors.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
         if (rv != null) sensors.registerListener(this, rv, SensorManager.SENSOR_DELAY_UI);
+        // 歩数：加速度センサーから数える（権限がいらない）
+        Sensor acc = sensors == null ? null : sensors.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+        stepSensor = acc != null;
+        if (acc != null) sensors.registerListener(this, acc, SensorManager.SENSOR_DELAY_GAME);
     }
 
     @Override
@@ -295,6 +299,7 @@ public class MainActivity extends Activity implements BeaconScanner.Listener, Se
             o.put("scanning", scanner.isScanning());
             o.put("tts", ttsReady);
             o.put("error", lastError);
+            o.put("stepSensor", stepSensor);
             o.put("model", Build.MANUFACTURER + " " + Build.MODEL + " / Android " + Build.VERSION.RELEASE);
             js("status", o.toString());
         } catch (Exception ignored) { }
@@ -326,6 +331,7 @@ public class MainActivity extends Activity implements BeaconScanner.Listener, Se
 
     @Override
     public void onSensorChanged(SensorEvent event) {
+        if (event.sensor.getType() == Sensor.TYPE_ACCELEROMETER) { onAccel(event.values); return; }
         SensorManager.getRotationMatrixFromVector(rot, event.values);
         SensorManager.getOrientation(rot, ori);
         float deg = (float) Math.toDegrees(ori[0]);
@@ -342,6 +348,36 @@ public class MainActivity extends Activity implements BeaconScanner.Listener, Se
 
     @Override
     public void onAccuracyChanged(Sensor sensor, int accuracy) { }
+
+    // ---------------------------------------------------------------- 歩数（加速度）
+    // 加速度の大きさをなめらかにし、ゆっくり追いかける基準（重力）との差が STEP_HIGH を超えたら1歩。
+    // 次の1歩は、差がいったん STEP_LOW を下回ってから（1歩を2回数えない）。歩数は 0.3 秒以上あける。
+    // 胸の前で持って、ゆっくり歩いたとき（白杖を使う歩き方）でも数えられるよう、しきい値は低めにしている。
+
+    private static final float STEP_HIGH = 0.6f;   // m/s²
+    private static final float STEP_LOW = 0.2f;    // m/s²
+    private static final long STEP_MIN_MS = 300;
+    private boolean stepSensor = false;
+    private float accSmooth = SensorManager.GRAVITY_EARTH, accBase = SensorManager.GRAVITY_EARTH;
+    private boolean stepArmed = true;
+    private long lastStepAt = 0;
+    private int steps = 0;
+
+    private void onAccel(float[] v) {
+        float m = (float) Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+        accSmooth += 0.25f * (m - accSmooth);
+        accBase += 0.01f * (m - accBase);
+        float d = accSmooth - accBase;
+        long now = SystemClock.elapsedRealtime();
+        if (d < STEP_LOW) {
+            stepArmed = true;
+        } else if (stepArmed && d > STEP_HIGH && now - lastStepAt >= STEP_MIN_MS) {
+            stepArmed = false;
+            lastStepAt = now;
+            steps++;
+            js("step", "{\"n\":" + steps + "}");
+        }
+    }
 
     // ---------------------------------------------------------------- JS から呼ばれる窓口
 
