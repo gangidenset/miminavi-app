@@ -101,7 +101,7 @@ const st = {
   view: 'home', tab: 'guide', sound: true,
   status: null, beacons: [], others: 0, scanning: false,
   heading: null, pos: null, nav: null, room: null, roomCand: null, roomCandN: 0,
-  data: { v: 2, n: 4.0, tx: {}, northOffset: null, assign: {}, uuids: [], moved: {}, beaconH: '', phoneH: '' },
+  data: { v: 2, n: 4.0, tx: {}, northOffset: null, assign: {}, uuids: [], moved: {}, beaconH: '', phoneH: '', posMode: 'prox' },
   browse: false, raw: [],
   placing: null,
 };
@@ -118,6 +118,7 @@ function load() {
       if (d.moved && typeof d.moved === 'object') st.data.moved = d.moved;
       if (d.beaconH != null) st.data.beaconH = String(d.beaconH);
       if (d.phoneH != null) st.data.phoneH = String(d.phoneH);
+      if (d.posMode === 'prox' || d.posMode === 'dist') st.data.posMode = d.posMode;
       if (Array.isArray(d.uuids)) st.data.uuids = d.uuids.map(normUuid).filter(Boolean);
       else if (typeof d.uuid === 'string' && d.uuid) st.data.uuids = [normUuid(d.uuid)];   // 旧形式（1つだけ）から移行
     }
@@ -299,7 +300,10 @@ function decideRoom(all) {
     else { st.roomCand = top.r.name; st.roomCandN = 1; }
   } else st.roomCand = null;
 }
-// ------------------------------------------------------------ 測位：受信台数で方式を切り替える
+// ------------------------------------------------------------ 測位
+// 「現在地の求め方」（ビーコンタブ）で切り替える
+//  近接型（標準） … いちばん強い2台を案内ルートの上で結び、2台の強さの差から2台の間のどこにいるかを出す
+//  距離（3点測位）… 推定距離から位置を計算する。受信台数で次のように切り替える
 //  1台    … 1点測位：ビーコンを中心に半径 d の円。円の上で、前回の位置の方向にある点
 //  2台    … 2点測位：2つの円の交点。交点が2つあれば、前回の位置・案内ルートに近い方。交わらなければ2台を結ぶ線の上
 //  3台以上 … 近い3台で3点測位：3つの円の式を引き算した連立方程式を解く。3台が一直線に近いときは最小二乗で探す
@@ -309,10 +313,11 @@ function estimate() {
   if (!all.length) { st.pos = null; st.room = null; return; }
   const prevRoom = st.room;
   decideRoom(all);   // 今いる部屋（到着判定に使う）
-  const used = all.slice(0, 3);
+  let used = all.slice(0, 3), prox = null;
   const prev = st.pos ? st.pos.raw : null;
   let p, method;
-  if (used.length === 1) { p = onePoint(used[0], prev); method = '1点測位'; }
+  if (st.data.posMode !== 'dist') { prox = proximity(all); p = prox.p; used = prox.used; method = `近接型（${used.length}台）`; }
+  else if (used.length === 1) { p = onePoint(used[0], prev); method = '1点測位'; }
   else if (used.length === 2) { p = twoPoint(used[0], used[1], prev); method = '2点測位'; }
   else { const r = threePoint(used, prev); p = r.p; method = r.ls ? '3点測位（最小二乗）' : '3点測位'; }
   // 前回となめらかにつなぐ（部屋が変わったときはそのまま移る）
@@ -328,8 +333,68 @@ function estimate() {
   }
   if (!cell) cell = nearestFree(raw);
   const [px, py] = (st.nav && !st.nav.sim) || LANES ? cellCenter(cell) : raw;
-  st.pos = { x: px, y: py, raw, acc: used[0].d, used, all, cell, room: st.room, method,
+  st.pos = { x: px, y: py, raw, acc: used[0].d, used, all, cell, room: st.room, method, prox,
              pathIdx, path: st.nav && !st.nav.sim ? st.nav.path : null };
+}
+// 近接型
+//  狭い所や反射の多い所では、RSSI が距離で素直に変わらず（実測で 1m→4m でも約9dB しか下がらない）、
+//  推定距離から位置を計算すると大きくずれる。そこで距離は使わず、強さの順番と差だけを使う。
+//  1. 1m地点の強さで補正した強さ（「1mで補正」の値を引いたもの）で、いちばん強い2台を選ぶ
+//  2. 2台それぞれの「案内ルートでいちばん近い点」を、案内ルートに沿って結ぶ
+//  3. 2台の強さの差 Δ から、強い方から見て f = 1 ÷ (1 + 10^(Δ ÷ PROX_SLOPE_DB)) の所にいるとする
+//     （差 0dB で真ん中、差が大きいほど強い方に寄る。1台だけのときはそのビーコンの点）
+const PROX_SLOPE_DB = 15;   // 強さの差がこの dB で、距離の比を10倍とみなす（実測の当てはめ n≈1.5 の 10×n）
+function proximity(all) {
+  const s = all.slice().sort((a, c) => strength(c) - strength(a));
+  const u1 = s[0], u2 = s[1];
+  const a1 = laneAnchor(u1.mb.at);
+  if (!u2) return { p: a1, used: [u1], f: 0, diff: null };
+  const diff = strength(u1) - strength(u2);
+  const f = 1 / (1 + Math.pow(10, diff / PROX_SLOPE_DB));
+  return { p: alongPts(lanePathPts(a1, laneAnchor(u2.mb.at)), f), used: [u1, u2], f, diff };
+}
+// ビーコンの位置から、案内ルートでいちばん近い点（案内ルートがない図面ではビーコンの位置）
+function laneAnchor(at) {
+  const c = LANES ? nearestLaneCell(at, null) : null;
+  return c ? cellCenter(c) : at.slice();
+}
+// 案内ルートのマスだけを通る a→b の最短の並び（点の配列）。つながっていなければ a・b を直線で結ぶ
+const lanePathCache = new Map();
+function lanePathPts(a, b) {
+  if (!LANES) return [a, b];
+  const ca = cellOf(a), cb = cellOf(b);
+  if (!isLane(ca[0], ca[1]) || !isLane(cb[0], cb[1])) return [a, b];
+  const key = ca.join() + '>' + cb.join();
+  if (lanePathCache.has(key)) return lanePathCache.get(key);
+  const prev = new Int32Array(GW * GH).fill(-2), start = ca[1] * GW + ca[0], goal = cb[1] * GW + cb[0];
+  const q = [start]; prev[start] = -1;
+  for (let h = 0; h < q.length && prev[goal] === -2; h++) {
+    const i = q[h], x = i % GW, y = (i - x) / GW;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const nx = x + dx, ny = y + dy, j = ny * GW + nx;
+      if ((dx || dy) && nx >= 0 && ny >= 0 && nx < GW && ny < GH && prev[j] === -2 && isLane(nx, ny)) { prev[j] = i; q.push(j); }
+    }
+  }
+  let pts = [a, b];
+  if (prev[goal] !== -2) {
+    pts = [];
+    for (let i = goal; i !== -1; i = prev[i]) pts.push(cellCenter([i % GW, Math.floor(i / GW)]));
+    pts.reverse();
+  }
+  lanePathCache.set(key, pts);
+  return pts;
+}
+// 点の並びに沿って、全体の長さの f の所
+function alongPts(pts, f) {
+  let total = 0;
+  for (let i = 1; i < pts.length; i++) total += dist(pts[i - 1], pts[i]);
+  let rest = total * f;
+  for (let i = 1; i < pts.length; i++) {
+    const L = dist(pts[i - 1], pts[i]);
+    if (rest <= L && L > 0) { const t = rest / L; return [pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * t, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * t]; }
+    rest -= L;
+  }
+  return pts[pts.length - 1].slice();
 }
 // 1点測位
 function onePoint(u, prev) {
@@ -953,7 +1018,10 @@ function renderPlan(full) {
   $('planPos').textContent = st.pos
     ? `x ${st.pos.x.toFixed(1)}m, y ${st.pos.y.toFixed(1)}m（${placeName([st.pos.x, st.pos.y])}付近・誤差 約${st.pos.acc.toFixed(1)}m）${st.room ? `／部屋：${roomName(st.room.name)}` : ''}`
     : '—（図面のビーコンを受信していません）';
-  $('planUsed').textContent = st.pos ? `${st.pos.method}：` + st.pos.used.map(u => `${u.mb.label} ${u.d.toFixed(1)}m`).join(' / ') + (st.pos.used.some(u => Math.abs(u.d - u.ds) > 0.005) ? '（高さ補正後の床の上の距離）' : '') : '—';
+  $('planUsed').textContent = !st.pos ? '—'
+    : st.pos.prox ? `${st.pos.method}：` + st.pos.used.map(u => `${u.mb.label} ${Math.round(u.b.rssi)}dBm`).join(' / ')
+      + (st.pos.prox.diff != null ? `（差 ${st.pos.prox.diff.toFixed(1)}dB → ${st.pos.used[0].mb.label} から ${st.pos.used[1].mb.label} へ ${Math.round(st.pos.prox.f * 100)}% の所）` : '（そのビーコンのそば）')
+    : `${st.pos.method}：` + st.pos.used.map(u => `${u.mb.label} ${u.d.toFixed(1)}m`).join(' / ') + (st.pos.used.some(u => Math.abs(u.d - u.ds) > 0.005) ? '（高さ補正後の床の上の距離）' : '');
   const seen = seenByLabel();
   $('placingBar').hidden = !st.placing;
   if (st.placing) { $('placingName').textContent = st.placing.label; $('placingText').textContent = st.placing.rec ? 'を図面上でタップ' : 'を置いた場所を図面上でタップ'; }
@@ -1055,6 +1123,7 @@ function renderBeacons() {
   else if (!st.scanning && N) w = 'スキャンが止まっています。ホームの「スキャン開始」を押してください。';
   warn.hidden = !w; warn.textContent = w;
   $('nRange').value = st.data.n; $('nVal').textContent = Number(st.data.n).toFixed(1);
+  $('posMode').value = st.data.posMode;
   if (document.activeElement !== $('hBeacon')) $('hBeacon').value = st.data.beaconH;
   if (document.activeElement !== $('hPhone')) $('hPhone').value = st.data.phoneH;
   renderHeightNote();
@@ -1186,6 +1255,8 @@ $('uuidInput').addEventListener('input', () => $('uuidInput').setCustomValidity(
 $('uuidBrowse').onclick = () => { st.browse = !st.browse; applyNativeFilter(); renderBeacons(); };
 $('uuidClear').onclick = () => { setUuids([]); say('すべてのビーコンを使います。'); };
 $('nRange').addEventListener('input', e => { st.data.n = Number(e.target.value); $('nVal').textContent = st.data.n.toFixed(1); save(); });
+// 現在地の求め方（近接型／距離から3点測位）
+$('posMode').addEventListener('change', e => { st.data.posMode = e.target.value; save(); estimate(); renderPlan(true); });
 // 高さの補正の設定
 ['hBeacon', 'hPhone'].forEach(id => $(id).addEventListener('change', () => {
   st.data.beaconH = $('hBeacon').value.trim(); st.data.phoneH = $('hPhone').value.trim();
@@ -1591,5 +1662,5 @@ if (N) {
   startMock();
 }
 // テスト用
-window.__mimi = { route, segments, matchDest, DESTS, ENTRY, st, startNav, doorsOnPath, atDest, roomAt, estimate, rec };
+window.__mimi = { proximity, lanePathPts, laneAnchor, BEACONS, route, segments, matchDest, DESTS, ENTRY, st, startNav, doorsOnPath, atDest, roomAt, estimate, rec };
 })();
