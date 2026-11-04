@@ -10,6 +10,11 @@
   python3 tools/analyze_rssi.py 測定結果1.csv 測定結果2.csv ...
   python3 tools/analyze_rssi.py *.csv --out report.md      # 結果を Markdown にも保存
   python3 tools/analyze_rssi.py *.csv --raw                # 4秒平均ではなく生の受信値の平均で当てはめる
+  python3 tools/analyze_rssi.py *.csv --slant              # 手入力の「実際の距離」が斜めの距離のとき
+
+  高さの補正：手入力の「実際の距離」は床の上の（水平の）距離として、iPhone と Android の高さが両方入っていれば
+  斜めの距離 √(水平の距離² + 高さの差²) にしてから当てはめる（例 デスク 0.7m・手持ち 1.4m なら差 0.7m）。
+  「ミミナビの位置」を指定した記録は、アプリが高さの差を含めて計算済みなのでそのまま使う。
 
   基準（ずれ 0 とする条件）は、体の向き=正面・向き=縦・障害物=無し。
   1つの CSV を何度書き出しても、同じ記録（記録No・測定日時・ビーコン）は1回だけ数える。
@@ -38,7 +43,7 @@ def num(v):
         return None
 
 
-def read_rows(paths, use_raw):
+def read_rows(paths, use_raw, slant=False):
     rows, seen = [], set()
     for p in paths:
         with open(p, encoding='utf-8-sig', newline='') as f:
@@ -51,6 +56,9 @@ def read_rows(paths, use_raw):
                 rssi = num(r.get('生RSSI平均値' if use_raw else 'RSSI平均値'))
                 if d is None or d <= 0 or rssi is None:
                     continue
+                ih, ah = num(r.get('iPhoneの高さ(m)')), num(r.get('Androidの高さ(m)'))
+                if not slant and not (r.get('ミミナビの位置') or '').strip() and ih is not None and ah is not None:
+                    d = math.hypot(d, ih - ah)
                 lv = {}
                 for col, _, base in FACTORS:
                     v = (r.get(col) or '').strip()
@@ -114,10 +122,11 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('csv', nargs='+')
     ap.add_argument('--raw', action='store_true', help='生RSSI平均値で当てはめる（既定は アプリが使う4秒平均の RSSI平均値）')
+    ap.add_argument('--slant', action='store_true', help='手入力の「実際の距離」を斜めの距離としてそのまま使う（高さで補正しない）')
     ap.add_argument('--out', help='結果を Markdown で保存するファイル')
     a = ap.parse_args()
 
-    rows = read_rows(a.csv, a.raw)
+    rows = read_rows(a.csv, a.raw, a.slant)
     if len(rows) < 3:
         sys.exit('使える行が足りません（実際の距離と RSSI が入った行が 3 行以上必要）')
     out = []
@@ -180,7 +189,7 @@ def main():
 
     # 5) 距離ごとの平均 RSSI（グラフ用）
     p('\n## 5. 実際の距離ごとの RSSI（基準条件）\n')
-    p('| 実際の距離 (m) | 行数 | RSSI 平均 | 式の予測（全データ） |')
+    p('| 実際の距離・斜め (m) | 行数 | RSSI 平均 | 式の予測（全データ） |')
     p('|---:|---:|---:|---:|')
     byd = defaultdict(list)
     for r in base_rows or rows:
