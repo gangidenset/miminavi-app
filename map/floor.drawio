@@ -863,7 +863,7 @@
         </object>
         <object label="受付" kind="destination" name="受付" keywords="受付,エントランス,入口,来客" id="c104">
           <mxCell parent="L_dest" style="ellipse;whiteSpace=wrap;html=1;fillColor=#E8603F;strokeColor=#FFFFFF;strokeWidth=2;fontSize=10;fontStyle=1;fontColor=#E8603F;labelPosition=center;verticalLabelPosition=bottom;align=center;verticalAlign=top;" vertex="1">
-            <mxGeometry height="18" width="20" x="663" y="740" as="geometry" />
+            <mxGeometry height="18" width="20" x="750" y="740" as="geometry" />
           </mxCell>
         </object>
         <object label="ロッカー" kind="destination" name="ロッカー" keywords="ロッカー,荷物" id="c105">
