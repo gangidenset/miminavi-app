@@ -142,7 +142,7 @@
         </object>
         <object label="B-10" kind="beacon" name="B-10" minor="10" id="ThyyCP9rVKgp_BeNNYXg-9">
           <mxCell parent="L_room" style="ellipse;whiteSpace=wrap;html=1;fillColor=#1C9488;strokeColor=#FFFFFF;strokeWidth=2;fontSize=9;fontColor=#FFFFFF;fontStyle=1;" vertex="1">
-            <mxGeometry height="30" width="30" x="1280" y="910" as="geometry" />
+            <mxGeometry height="30" width="30" x="1336" y="910" as="geometry" />
           </mxCell>
         </object>
         <object label="B-11" kind="beacon" name="B-11" minor="11" id="ThyyCP9rVKgp_BeNNYXg-10">
@@ -173,6 +173,26 @@
         <object label="B-15" kind="beacon" name="B-15" minor="15" id="ThyyCP9rVKgp_BeNNYXg-16">
           <mxCell parent="L_room" style="ellipse;whiteSpace=wrap;html=1;fillColor=#1C9488;strokeColor=#FFFFFF;strokeWidth=2;fontSize=9;fontColor=#FFFFFF;fontStyle=1;" vertex="1">
             <mxGeometry height="30" width="30" x="490" y="196.25" as="geometry" />
+          </mxCell>
+        </object>
+        <object label="B-16" kind="beacon" name="B-16" minor="16" id="jF8uEWAaMexLJ5KsrpOX-0">
+          <mxCell parent="L_room" style="ellipse;whiteSpace=wrap;html=1;fillColor=#1C9488;strokeColor=#FFFFFF;strokeWidth=2;fontSize=9;fontColor=#FFFFFF;fontStyle=1;" vertex="1">
+            <mxGeometry height="30" width="30" x="816" y="740" as="geometry" />
+          </mxCell>
+        </object>
+        <object label="B-17" kind="beacon" name="B-17" minor="17" id="jF8uEWAaMexLJ5KsrpOX-1">
+          <mxCell parent="L_room" style="ellipse;whiteSpace=wrap;html=1;fillColor=#1C9488;strokeColor=#FFFFFF;strokeWidth=2;fontSize=9;fontColor=#FFFFFF;fontStyle=1;" vertex="1">
+            <mxGeometry height="30" width="30" x="800" y="982" as="geometry" />
+          </mxCell>
+        </object>
+        <object label="B-18" kind="beacon" name="B-18" minor="18" id="jF8uEWAaMexLJ5KsrpOX-2">
+          <mxCell parent="L_room" style="ellipse;whiteSpace=wrap;html=1;fillColor=#1C9488;strokeColor=#FFFFFF;strokeWidth=2;fontSize=9;fontColor=#FFFFFF;fontStyle=1;" vertex="1">
+            <mxGeometry height="30" width="30" x="816" y="500" as="geometry" />
+          </mxCell>
+        </object>
+        <object label="B-19" kind="beacon" name="B-19" minor="19" id="jF8uEWAaMexLJ5KsrpOX-3">
+          <mxCell parent="L_room" style="ellipse;whiteSpace=wrap;html=1;fillColor=#1C9488;strokeColor=#FFFFFF;strokeWidth=2;fontSize=9;fontColor=#FFFFFF;fontStyle=1;" vertex="1">
+            <mxGeometry height="30" width="30" x="1080" y="910" as="geometry" />
           </mxCell>
         </object>
         <mxCell id="L_lane" parent="0" value="通路（案内ルート）" />
@@ -843,7 +863,7 @@
         </object>
         <object label="受付" kind="destination" name="受付" keywords="受付,エントランス,入口,来客" id="c104">
           <mxCell parent="L_dest" style="ellipse;whiteSpace=wrap;html=1;fillColor=#E8603F;strokeColor=#FFFFFF;strokeWidth=2;fontSize=10;fontStyle=1;fontColor=#E8603F;labelPosition=center;verticalLabelPosition=bottom;align=center;verticalAlign=top;" vertex="1">
-            <mxGeometry height="18" width="20" x="663" y="740" as="geometry" />
+            <mxGeometry height="18" width="20" x="750" y="740" as="geometry" />
           </mxCell>
         </object>
         <object label="ロッカー" kind="destination" name="ロッカー" keywords="ロッカー,荷物" id="c105">
@@ -871,14 +891,9 @@
             <mxGeometry height="20" width="18" x="1568" y="1282" as="geometry" />
           </mxCell>
         </object>
-        <object label="男子トイレ" kind="destination" name="男子トイレ" keywords="トイレ,男子トイレ,お手洗い" id="c110">
+        <object label="トイレ" kind="destination" name="トイレ" keywords="トイレ,お手洗い,化粧室,男子トイレ,女子トイレ" id="c110">
           <mxCell parent="L_dest" style="ellipse;whiteSpace=wrap;html=1;fillColor=#E8603F;strokeColor=#FFFFFF;strokeWidth=2;fontSize=10;fontStyle=1;fontColor=#E8603F;labelPosition=center;verticalLabelPosition=bottom;align=center;verticalAlign=top;" vertex="1">
-            <mxGeometry height="19" width="19" x="893" y="114" as="geometry" />
-          </mxCell>
-        </object>
-        <object label="女子トイレ" kind="destination" name="女子トイレ" keywords="トイレ,女子トイレ,お手洗い" id="c111">
-          <mxCell parent="L_dest" style="ellipse;whiteSpace=wrap;html=1;fillColor=#E8603F;strokeColor=#FFFFFF;strokeWidth=2;fontSize=10;fontStyle=1;fontColor=#E8603F;labelPosition=center;verticalLabelPosition=bottom;align=center;verticalAlign=top;" vertex="1">
-            <mxGeometry height="19" width="19" x="893" y="228" as="geometry" />
+            <mxGeometry height="19" width="19" x="811" y="176" as="geometry" />
           </mxCell>
         </object>
         <object label="給湯室" kind="destination" name="給湯室" keywords="給湯室,お湯" id="c112">
