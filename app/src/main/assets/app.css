@@ -190,3 +190,18 @@ button:focus-visible,input:focus-visible{outline:3px solid var(--coral);outline-
 .hrow{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
 .hrow label{display:flex;flex-direction:column;gap:2px;font-size:11.5px;color:var(--muted)}
 .hrow input{border:1.5px solid var(--line);border-radius:10px;padding:6px 8px;background:var(--surface);color:var(--ink);font:inherit;font-size:13px;width:100%}
+
+/* 図面タブの拡大・縮小 */
+.mapwrap{position:relative;flex:none;display:flex;flex-direction:column;gap:4px}
+.mapwrap .map.plan{touch-action:pan-y}
+.mapwrap .map.plan svg{touch-action:inherit}
+.mapwrap.zoomed .map.plan{touch-action:none}
+.zoomctl{position:absolute;top:8px;right:8px;display:flex;flex-direction:column;gap:6px;z-index:2}
+.zoomctl button{min-width:40px;height:40px;border-radius:12px;border:1.5px solid var(--line);background:var(--surface);color:var(--ink);font-size:20px;font-weight:700;display:flex;align-items:center;justify-content:center;padding:0 6px;box-shadow:0 1px 4px rgba(0,0,0,.12)}
+.zoomctl #zoomReset{font-size:11px}
+.zoomctl button:disabled{opacity:.4}
+.zoomhint{margin:0;font-size:11px;color:var(--muted);text-align:center}
+.mapwrap.full{position:fixed;inset:0;z-index:50;background:var(--surface);padding:10px;padding-top:max(10px,env(safe-area-inset-top));padding-bottom:max(10px,env(safe-area-inset-bottom))}
+.mapwrap.full .map.plan{flex:1;aspect-ratio:auto}
+.mapwrap.full .zoomctl{top:max(18px,calc(env(safe-area-inset-top) + 8px));right:18px}
+.mapwrap.full #zoomFull{background:var(--teal);border-color:var(--teal);color:#fff}
