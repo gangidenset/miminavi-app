@@ -160,6 +160,7 @@ function hush() { try { if (N) N.stopSpeak(); else speechSynthesis.cancel(); } c
 const VIEWS = ['home', 'calib', 'listen', 'nav', 'done', 'plan', 'beacons'];
 function show(v) {
   st.view = v;
+  if (v !== 'plan' && zoom.full) zoomFull(false);
   VIEWS.forEach(k => { $('v-' + k).hidden = k !== v; });
   const tab = v === 'plan' ? 'plan' : v === 'beacons' ? 'beacons' : 'guide';
   st.tab = tab;
@@ -178,6 +179,7 @@ $('tabbar').addEventListener('click', e => {
 window.__back = () => {
   if (!$('dark').hidden) { $('dark').hidden = true; return true; }
   if (st.placing) { const r = st.placing.rec || st.placing.recBeacon; st.placing = null; if (r) show('beacons'); else renderPlan(true); return true; }
+  if (zoom.full) { zoomFull(false); return true; }
   if (st.tab !== 'guide') { show(guideView); return true; }
   if (st.view !== 'home') { stopNav(); show('home'); return true; }
   return false;
@@ -1173,7 +1175,7 @@ $('doneHome').onclick = () => show('home');
 let listSig = '';
 function renderPlan(full) {
   const el = $('planMap');
-  if (full || !el.querySelector('svg')) buildMap(el, { allDests: true, small: true });
+  if (full || !el.querySelector('svg')) { buildMap(el, { allDests: true, small: true }); zoomApply(); }
   else updateDyn(el);
   $('planSize').textContent = `${(BX1 - BX0 - 0.8).toFixed(1)}m × ${(BY1 - BY0 - 0.8).toFixed(1)}m`;
   $('planPos').textContent = st.pos
@@ -1225,6 +1227,116 @@ $('placedList').addEventListener('click', e => {
   Object.keys(st.data.assign).forEach(k => { if (st.data.assign[k].label === b.dataset.del) delete st.data.assign[k]; });
   save(); estimate(); renderPlan(true);
 });
+// ------------------------------------------------------------ 図面タブの拡大・縮小
+// 拡大率 s（1 = 図面全体）と、表示の中心 c（図面の座標 × U）で表す。viewBox の縦横比は表示枠に合わせる
+const ZMAX = 8;
+const zoom = { s: 1, c: null, full: false, ptrs: new Map(), g: null, moved: false, suppress: false, lastTap: null };
+const zoomBase = () => [BX0 * U, BY0 * U, (BX1 - BX0) * U, (BY1 - BY0) * U];
+function zoomBox() { const r = $('planMap').getBoundingClientRect(); return r.width > 0 && r.height > 0 ? r : null; }
+// 今の s・c から viewBox を求める（図面の外へ出すぎないように中心を寄せる）
+function zoomView(box) {
+  const b = zoomBase(), ar = box.width / box.height;
+  const W = b[2] / b[3] > ar ? b[2] : b[3] * ar, H = W / ar;
+  const w = W / zoom.s, h = H / zoom.s;
+  const c = zoom.c || [b[0] + b[2] / 2, b[1] + b[3] / 2];
+  const cl = (v, lo, len, sz) => sz >= len ? lo + len / 2 : Math.min(Math.max(v, lo + sz / 2), lo + len - sz / 2);
+  zoom.c = [cl(c[0], b[0], b[2], w), cl(c[1], b[1], b[3], h)];
+  return [zoom.c[0] - w / 2, zoom.c[1] - h / 2, w, h];
+}
+function zoomApply() {
+  const svg = $('planMap').querySelector('svg'), box = zoomBox();
+  if (!svg || !box) return null;
+  const v = zoomView(box);
+  svg.setAttribute('viewBox', v.map(n => n.toFixed(1)).join(' '));
+  $('planWrap').classList.toggle('zoomed', zoom.s > 1.001);
+  $('zoomIn').disabled = zoom.s >= ZMAX - 0.001;
+  $('zoomOut').disabled = $('zoomReset').disabled = zoom.s <= 1.001;
+  return v;
+}
+// 画面上の点 (px, py)（表示枠の左上から）にある図面の点を、そのまま同じ所に残して拡大率を変える
+function zoomAt(s, px, py, q) {
+  const box = zoomBox(); if (!box) return;
+  if (!q) { const v = zoomView(box), k = v[2] / box.width; q = [v[0] + px * k, v[1] + py * k]; }
+  zoom.s = Math.min(Math.max(s, 1), ZMAX);
+  const v = zoomView(box), k = v[2] / box.width;
+  zoom.c = [q[0] - px * k + v[2] / 2, q[1] - py * k + v[3] / 2];
+  zoomApply();
+}
+function zoomEnd() { if (st.placing) updateDyn($('planMap')); }
+function zoomFull(on) {
+  zoom.full = on;
+  $('planWrap').classList.toggle('full', on);
+  $('zoomFull').setAttribute('aria-pressed', on);
+  $('zoomFull').setAttribute('aria-label', on ? '大きく表示をやめる' : '大きく表示');
+  zoomApply(); zoomEnd();
+}
+const zoomBtn = f => () => { const box = zoomBox(); if (box) { zoomAt(f(zoom.s), box.width / 2, box.height / 2); zoomEnd(); } };
+$('zoomIn').onclick = zoomBtn(s => s * 1.6);
+$('zoomOut').onclick = zoomBtn(s => s / 1.6);
+$('zoomReset').onclick = () => { zoom.s = 1; zoom.c = null; zoomApply(); zoomEnd(); };
+$('zoomFull').onclick = () => zoomFull(!zoom.full);
+if (window.ResizeObserver) new ResizeObserver(() => zoomApply()).observe($('planMap'));
+// 指での操作：2本指で拡大・縮小、拡大中は1本指で移動、ダブルタップで拡大
+{
+  const el = $('planMap');
+  const rel = p => { const r = el.getBoundingClientRect(); return [p.x - r.left, p.y - r.top]; };
+  const gesture = () => {
+    const box = zoomBox(), v = box && zoomView(box); if (!v) return null;
+    const ps = [...zoom.ptrs.values()], k = v[2] / box.width;
+    if (ps.length >= 2) {
+      const [a, b] = ps, m = rel({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+      return { s0: zoom.s, d0: Math.max(Math.hypot(a.x - b.x, a.y - b.y), 1), q: [v[0] + m[0] * k, v[1] + m[1] * k] };
+    }
+    return { pan: true, p0: { ...ps[0] }, c0: zoom.c.slice(), k };
+  };
+  el.addEventListener('pointerdown', e => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    zoom.ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (zoom.ptrs.size === 1) { zoom.moved = false; zoom.down = { x: e.clientX, y: e.clientY }; }
+    zoom.g = gesture();
+    try { el.setPointerCapture(e.pointerId); } catch (_) { }
+  });
+  el.addEventListener('pointermove', e => {
+    const p = zoom.ptrs.get(e.pointerId); if (!p || !zoom.g) return;
+    p.x = e.clientX; p.y = e.clientY;
+    const ps = [...zoom.ptrs.values()];
+    if (ps.length >= 2 && !zoom.g.pan) {
+      const [a, b] = ps, m = rel({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+      zoom.moved = true;
+      zoomAt(zoom.g.s0 * Math.hypot(a.x - b.x, a.y - b.y) / zoom.g.d0, m[0], m[1], zoom.g.q);
+    } else if (zoom.g.pan) {
+      const dx = p.x - zoom.g.p0.x, dy = p.y - zoom.g.p0.y;
+      if (!zoom.moved && Math.hypot(dx, dy) < 8) return;
+      zoom.moved = true;
+      if (zoom.s <= 1.001) return;
+      zoom.c = [zoom.g.c0[0] - dx * zoom.g.k, zoom.g.c0[1] - dy * zoom.g.k];
+      zoomApply();
+    }
+  });
+  const up = e => {
+    if (!zoom.ptrs.has(e.pointerId)) return;
+    zoom.ptrs.delete(e.pointerId);
+    if (zoom.moved) zoom.suppress = true;   // 動かしたあとの click では、ビーコンを置かない
+    if (zoom.ptrs.size) { zoom.g = gesture(); return; }
+    zoom.g = null;
+    if (zoom.moved) { zoomEnd(); return; }
+    if (e.type !== 'pointerup' || st.placing) return;
+    const now = Date.now(), t = zoom.lastTap;
+    if (t && now - t.time < 320 && Math.hypot(e.clientX - t.x, e.clientY - t.y) < 30) {
+      const [px, py] = rel({ x: e.clientX, y: e.clientY });
+      if (zoom.s >= ZMAX - 0.001) { zoom.s = 1; zoom.c = null; zoomApply(); } else zoomAt(zoom.s * 2, px, py);
+      zoom.lastTap = null; zoomEnd();
+    } else zoom.lastTap = { time: now, x: e.clientX, y: e.clientY };
+  };
+  el.addEventListener('pointerup', up);
+  el.addEventListener('pointercancel', up);
+  el.addEventListener('click', e => { if (zoom.suppress) { zoom.suppress = false; e.stopImmediatePropagation(); e.preventDefault(); } }, true);
+  el.addEventListener('wheel', e => {
+    e.preventDefault();
+    const [px, py] = rel({ x: e.clientX, y: e.clientY });
+    zoomAt(zoom.s * Math.exp(-e.deltaY / 300), px, py); zoomEnd();
+  }, { passive: false });
+}
 $('planMap').addEventListener('click', e => {
   if (!st.placing) return;
   const svg = $('planMap').querySelector('svg'); if (!svg) return;
@@ -1440,7 +1552,7 @@ $('holdStill').addEventListener('change', e => { st.data.holdStill = e.target.ch
 $('headRef').addEventListener('change', e => { st.data.headRef = e.target.value; save(); renderBeacons(); });
 $('mapNorth').addEventListener('change', e => {
   const v = parseFloat(String(e.target.value).replace(',', '.'));
-  if (isFinite(v)) { st.data.mapNorth = Math.round(((v % 360) + 360) % 360); save(); if ($('planMap').querySelector('svg')) buildMap($('planMap'), { allDests: true, small: true }); }
+  if (isFinite(v)) { st.data.mapNorth = Math.round(((v % 360) + 360) % 360); save(); if ($('planMap').querySelector('svg')) { buildMap($('planMap'), { allDests: true, small: true }); zoomApply(); } }
   e.target.value = st.data.mapNorth;
 });
 $('pullPct').addEventListener('change', e => {

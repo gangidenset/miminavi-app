@@ -114,7 +114,16 @@
       <div><b id="placingName"></b><span id="placingText">を置いた場所を図面上でタップ</span></div>
       <button class="iconbtn" id="placingCancel">やめる</button>
     </div>
-    <div class="map plan" id="planMap"></div>
+    <div class="mapwrap" id="planWrap">
+      <div class="map plan" id="planMap"></div>
+      <div class="zoomctl" role="group" aria-label="図面の拡大・縮小">
+        <button type="button" id="zoomIn" aria-label="拡大">＋</button>
+        <button type="button" id="zoomOut" aria-label="縮小">－</button>
+        <button type="button" id="zoomReset" aria-label="全体を表示">全体</button>
+        <button type="button" id="zoomFull" aria-label="大きく表示" aria-pressed="false"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+      </div>
+      <p class="zoomhint">2本指で広げると拡大・拡大中は1本指で移動・ダブルタップで拡大</p>
+    </div>
     <dl class="kv"><dt>推定位置</dt><dd id="planPos">—</dd><dt>使用ビーコン</dt><dd id="planUsed">—</dd><dt>引っ張り</dt><dd id="planPull">—</dd><dt>向き</dt><dd id="planHead">—</dd><dt>歩行</dt><dd id="planWalk">—</dd></dl>
     <div class="legend">
       <span><i class="lg teal"></i>ビーコン（受信中）</span>
