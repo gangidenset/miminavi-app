@@ -2,7 +2,8 @@
 rem ミミナビ RSSI 分析（tools\analyze_rssi.py を動かす）
 rem  ・ダブルクリック          … 近くの「測定データ」フォルダの測定結果 CSV をすべて分析する
 rem  ・CSV やフォルダをこの上にドラッグ＆ドロップ … それだけを分析する
-rem  結果はこのファイルと同じフォルダの「RSSI分析結果.md」に保存し、メモ帳で開く
+rem  結果は、このフォルダと同じ階層の「分析結果」フォルダ（なければ作る）に「RSSI分析結果_日付-時刻.md」として保存する。
+rem  画面には結論（アプリに使う A と n）だけを出す
 setlocal
 cd /d "%~dp0"
 set "PYTHONUTF8=1"
@@ -11,11 +12,10 @@ py -3 --version >nul 2>&1 && set "PY=py -3"
 if not defined PY python --version >nul 2>&1 && set "PY=python"
 if not defined PY goto nopython
 if not exist "%~dp0analyze_rssi.py" goto noscript
-set "OUT=%~dp0RSSI分析結果.md"
-%PY% "%~dp0analyze_rssi.py" %* --out "%OUT%" >nul
+%PY% "%~dp0analyze_rssi.py" %* --summary --out-dir "%~dp0..\分析結果"
 if errorlevel 1 goto failed
-echo 分析が終わりました：%OUT%
-start "" notepad "%OUT%"
+echo.
+pause
 exit /b 0
 
 :nopython

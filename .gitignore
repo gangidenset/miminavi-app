@@ -10,3 +10,5 @@
 .cxx/
 *.log
 __pycache__/
+# tools/RSSI分析.bat の結果
+/分析結果/

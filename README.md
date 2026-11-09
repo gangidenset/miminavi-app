@@ -106,7 +106,7 @@ MainActivity.java ── 読み上げ・音声認識・CSV の保存・画面を
 | `map/floor.drawio` | フロアマップの元データ。draw.io で編集する（書き方は「フロアマップの更新方法」） |
 | `tools/drawio_to_map.py` | `floor.drawio` を読み、縮尺を合わせて `app/src/main/assets/map.js` を作る。GitHub Actions のビルドのたびに自動で実行される |
 | `tools/analyze_rssi.py` | 「結果を書き出す（CSV）」の CSV から、距離の式の値（A・n）と、体の向き・向き・障害物ごとの RSSI のずれを求める（使い方は「測定データの分析」） |
-| `tools/RSSI分析.bat` | Windows 用。`analyze_rssi.py` を動かし、結果（`RSSI分析結果.md`）をメモ帳で開く。Shift_JIS・CRLF で保存している |
+| `tools/RSSI分析.bat` | Windows 用。`analyze_rssi.py` を動かし、結果を1つ上の階層の「分析結果」フォルダ（なければ作る）に `RSSI分析結果_日付-時刻.md` として保存して、画面に結論（アプリに使う A と n）を出す。Shift_JIS・CRLF で保存している |
 
 ### ビルドの設定
 
@@ -205,7 +205,8 @@ python3 tools/analyze_rssi.py 測定データ --out 分析結果.md
 ├─ツール
 │      RSSI分析.bat        … ダブルクリック
 │      analyze_rssi.py
-│      RSSI分析結果.md      … 結果（メモ帳で開く）
+├─分析結果                 … バッチが作り、実行するたびに結果を保存する
+│      RSSI分析結果_20261109-1030.md   … 実行した日付-時刻
 └─測定データ
     ├─20261102
     │      miminavi_測定結果_20261102-1527.csv
@@ -214,6 +215,8 @@ python3 tools/analyze_rssi.py 測定データ --out 分析結果.md
 ```
 
 CSV やフォルダを `RSSI分析.bat` の上にドラッグ＆ドロップすると、それだけを分析します。
+
+結果の Markdown のいちばん上（と、バッチの画面）に、**結論：アプリに使う A と n** を出します。アプリと同じ式で出した推定距離と実際の距離の差（誤差率）が、全データでいちばん小さくなる A・n を総当たりで探し（n はアプリのスライダーと同じ 2.0〜5.0）、今の値（A = −45、n = 4.0）より誤差率が 3% 以上減るときだけ、変えることをすすめます（30 行未満、または距離の幅が 3 倍未満のときは、データが足りないので今の値のままにするよう出します）。
 
 距離の式 RSSI = A − 10·n·log10(d) に最小二乗で当てはめ、次を出します。
 

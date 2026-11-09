@@ -14,7 +14,14 @@
   python3 tools/analyze_rssi.py 測定データ                  # フォルダを渡すと、中（サブフォルダも）の測定結果 CSV をすべて使う
   python3 tools/analyze_rssi.py                             # 何も渡さないと、近くの「測定データ」フォルダを探して使う
 
+  python3 tools/analyze_rssi.py 測定データ --out-dir 分析結果  # 「RSSI分析結果_日付-時刻.md」をそのフォルダに作る（なければ作る）
+  python3 tools/analyze_rssi.py 測定データ --summary         # 画面には結論（アプリに使う A と n）だけを出す
+
   Windows では tools/RSSI分析.bat をダブルクリックするか、CSV・フォルダをその上にドラッグ＆ドロップしても動く。
+
+  結論の A・n：アプリの式 d = 10^((A − RSSI) ÷ (10 × n)) で出した推定距離と実際の距離の差（誤差率）が、
+  全データでいちばん小さくなる A・n を総当たりで探す（n はアプリのスライダーと同じ 2.0〜5.0）。
+  今の値より誤差が目に見えて減るときだけ、変えることをすすめる（データが少ない・距離の幅が狭いときはすすめない）。
 
   高さの補正：手入力の「実際の距離」は床の上の（水平の）距離として、iPhone と Android の高さが両方入っていれば
   斜めの距離 √(水平の距離² + 高さの差²) にしてから当てはめる（例 デスク 0.7m・手持ち 1.4m なら差 0.7m）。
@@ -26,12 +33,17 @@
 """
 import argparse
 import csv
+import datetime
 import math
 import sys
 from pathlib import Path
 from collections import Counter, defaultdict
 
 CUR_A, CUR_N = -45.0, 4.0
+GRID_A = [x / 2 for x in range(-140, -59)]     # A の候補：−70.0〜−30.0 dBm（0.5 刻み）
+GRID_N = [x / 10 for x in range(20, 51)]       # n の候補：2.0〜5.0（アプリのスライダーと同じ範囲・0.1 刻み）
+BETTER_PT = 3.0                                # 誤差率がこの % 以上減るときだけ、値を変えることをすすめる
+MIN_ROWS = 30                                  # これより行数が少ないときは、値を変えることをすすめない
 FACTORS = [  # (CSV の列, 表示名, 基準の値)
     ('体の向き', '体の向き', '正面'),
     ('Androidの向き', 'Androidの向き', '縦'),
@@ -151,12 +163,62 @@ def dist_err(rows, A, n, offsets=None):
     return sum(errs) / len(errs), errs[len(errs) // 2], sum(rel) / len(rel)
 
 
+def best_by_distance(rows):
+    """推定距離の誤差率がいちばん小さくなる A・n（総当たり）"""
+    best = None
+    for n in GRID_N:
+        for A in GRID_A:
+            m, med, rel = dist_err(rows, A, n)
+            if best is None or rel < best[4] - 1e-9:
+                best = (A, n, m, med, rel)
+    return best
+
+
+def conclusion(rows):
+    """結論（アプリに使う A と n）の Markdown の行"""
+    cm, cmed, crel = dist_err(rows, CUR_A, CUR_N)
+    A, n, m, med, rel = best_by_distance(rows)
+    out = ['## 結論：アプリに使う A（1m 地点の値）と n（減衰係数）\n']
+    ds = [r['d'] for r in rows]
+    if len(rows) < MIN_ROWS or max(ds) / min(ds) < 3:
+        out.append(f'**今の値（A = {CUR_A:.0f} dBm、n = {CUR_N:.1f}）のままにしてください。**'
+                   f'データが {len(rows)} 行・距離 {min(ds):.1f}〜{max(ds):.1f}m で、A・n を決めるには足りません'
+                   f'（{MIN_ROWS} 行以上・いちばん遠い距離がいちばん近い距離の 3 倍以上が必要。例 1m〜5m）。'
+                   f'参考：誤差がいちばん小さい値は A = {A:.1f}、n = {n:.1f}（誤差率 {crel:.0f}% → {rel:.0f}%）です。\n')
+    elif rel <= crel - BETTER_PT:
+        out.append(f'**A = {A:.1f} dBm、n = {n:.1f} に変えるのがおすすめです。**'
+                   f'推定距離の誤差が、平均 {cm:.2f}m → {m:.2f}m（誤差率 {crel:.0f}% → {rel:.0f}%）に減ります。\n')
+    else:
+        out.append(f'**今の値（A = {CUR_A:.0f} dBm、n = {CUR_N:.1f}）のままでよいです。**'
+                   f'いちばん誤差が小さくなる値（A = {A:.1f}、n = {n:.1f}）にしても、誤差率は {crel:.0f}% → {rel:.0f}% で、'
+                   f'ほとんど変わりません。\n')
+    out += ['| | A（1m 地点の値） | n（減衰係数） | 推定距離の誤差（平均） | 中央値 | 誤差率（平均） |',
+            '|---|---:|---:|---:|---:|---:|',
+            f'| 今のアプリ | {CUR_A:.1f} dBm | {CUR_N:.1f} | {cm:.2f}m | {cmed:.2f}m | {crel:.0f}% |',
+            f'| 誤差がいちばん小さい値 | {A:.1f} dBm | {n:.1f} | {m:.2f}m | {med:.2f}m | {rel:.0f}% |', '']
+    edge = []
+    if A in (GRID_A[0], GRID_A[-1]):
+        edge.append(f'A が探した範囲（{GRID_A[0]:.0f}〜{GRID_A[-1]:.0f} dBm）の端です')
+    if n in (GRID_N[0], GRID_N[-1]):
+        edge.append(f'n がアプリで設定できる範囲（{GRID_N[0]:.1f}〜{GRID_N[-1]:.1f}）の端です')
+    if edge:
+        out.append('- ※ ' + '。'.join(edge) + '。データが偏っている可能性があります')
+    out += [f'- 全 {len(rows)} 行で、アプリと同じ式 d = 10^((A − RSSI) ÷ (10 × n)) の推定距離と実際の距離を比べた結果です',
+            '- n はビーコンタブ「距離の推定」の「減衰係数 n」で変えられます。A を全部のビーコンで変えるにはアプリの改修'
+            '（`app.js` の `DEFAULT_A`）が必要です。ビーコンごとなら、そのビーコンから1m の所で「1mで補正」を押します',
+            '- 現在地の求め方が「近接型」（標準）のときは、現在地の計算に A・n を使いません（画面の推定距離と「距離から計算」に使います）',
+            '- 下の「1.」「2.」の A・n は RSSI の式への当てはめで、距離の誤差を小さくする値とは別です。アプリに入れるのは上の値です\n']
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('csv', nargs='*', help='測定結果 CSV またはフォルダ（省略すると「測定データ」フォルダを探す）')
     ap.add_argument('--raw', action='store_true', help='生RSSI平均値で当てはめる（既定は アプリが使う4秒平均の RSSI平均値）')
     ap.add_argument('--slant', action='store_true', help='手入力の「実際の距離」を斜めの距離としてそのまま使う（高さで補正しない）')
     ap.add_argument('--out', help='結果を Markdown で保存するファイル')
+    ap.add_argument('--out-dir', help='このフォルダに「RSSI分析結果_日付-時刻.md」を作る（フォルダがなければ作る）')
+    ap.add_argument('--summary', action='store_true', help='画面には結論（アプリに使う A と n）だけを出す')
     a = ap.parse_args()
 
     a.csv = expand_paths(a.csv)
@@ -165,7 +227,11 @@ def main():
         sys.exit('使える行が足りません（実際の距離と RSSI が入った行が 3 行以上必要）')
     out = []
     p = out.append
-    p(f'# RSSI 分析結果\n\n対象：{len(rows)} 行（CSV {len(a.csv)} 個：{", ".join(Path(f).name for f in a.csv)}。同じ記録は1回だけ数える）　RSSI：{"生の受信値の平均" if a.raw else "4秒平均（アプリと同じ）"}\n')
+    now = datetime.datetime.now()
+    p(f'# RSSI 分析結果（{now:%Y/%m/%d %H:%M}）\n\n対象：{len(rows)} 行（CSV {len(a.csv)} 個：{", ".join(Path(f).name for f in a.csv)}。同じ記録は1回だけ数える）　RSSI：{"生の受信値の平均" if a.raw else "4秒平均（アプリと同じ）"}\n')
+
+    summary = conclusion(rows)
+    out += summary
 
     # 1) 基準条件だけで A と n
     base_rows = [r for r in rows if all(r[col] == base for col, _, base in FACTORS)]
@@ -237,13 +303,23 @@ def main():
         p(f'| {d:g} | {len(v)} | {sum(v) / len(v):.1f} | {c["A"] - 10 * c["n"] * math.log10(d):.1f} |')
 
     p('\n## アプリに反映するとき\n')
-    p('- `app/src/main/assets/app.js` の `DEFAULT_A`（1m 地点の強さ）と、n の初期値（ビーコンタブの減衰係数）を上の値にする')
-    p('- 体の向き・壁のずれが数 dB 以上あるなら、その分を RSSI に足してから距離にする補正を検討する')
+    p('- A・n は、いちばん上の「結論」の値を使う')
+    p('- 体の向き・壁のずれ（「2.」）が数 dB 以上あるなら、その分を RSSI に足してから距離にする補正を検討する')
     text = '\n'.join(out) + '\n'
-    print(text)
-    if a.out:
-        with open(a.out, 'w', encoding='utf-8') as f:
+    outs = [a.out] if a.out else []
+    if a.out_dir:
+        d = Path(a.out_dir).resolve()
+        d.mkdir(parents=True, exist_ok=True)   # なければ作る
+        outs.append(str(d / f'RSSI分析結果_{now:%Y%m%d-%H%M}.md'))
+    for o in outs:
+        with open(o, 'w', encoding='utf-8') as f:
             f.write(text)
+    if a.summary:
+        print('\n'.join(l for l in summary if not l.startswith('|---')).replace('**', ''))
+        for o in outs:
+            print(f'\n結果をすべて保存しました：{o}')
+    else:
+        print(text)
 
 
 if __name__ == '__main__':
