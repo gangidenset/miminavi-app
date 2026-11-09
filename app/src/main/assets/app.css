@@ -2,7 +2,7 @@
 :root{
   --bg:#eef3f1; --surface:#ffffff; --ink:#1f2f33; --muted:#5d6f72; --line:#d5e0dd;
   --teal:#1c9488; --teal-soft:#d6efec; --coral:#e8603f; --coral-soft:#fde3da;
-  --slate:#24363a; --shelf:#c9d6d3; --floor:#f7faf9; --gray:#9fb0b2;
+  --slate:#24363a; --shelf:#c9d6d3; --floor:#f7faf9; --gray:#9fb0b2; --blabel:#1d5fd6;
   --f-display:"Zen Kaku Gothic New","Hiragino Sans","Noto Sans JP","Noto Sans CJK JP",sans-serif;
   --f-body:"BIZ UDPGothic","Hiragino Sans","Noto Sans JP","Noto Sans CJK JP",sans-serif;
   --f-mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
@@ -10,7 +10,7 @@
 @media (prefers-color-scheme: dark){:root{
   --bg:#0f1719; --surface:#182427; --ink:#e4eeec; --muted:#93a7a8; --line:#2b3c3f;
   --teal:#3cc2b4; --teal-soft:#16393a; --coral:#ff825f; --coral-soft:#43251d;
-  --slate:#d6e4e1; --shelf:#33474a; --floor:#1d2b2e; --gray:#5d7072; color-scheme:dark}}
+  --slate:#d6e4e1; --shelf:#33474a; --floor:#1d2b2e; --gray:#5d7072; --blabel:#8ab8ff; color-scheme:dark}}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 [hidden]{display:none!important}
 html,body{margin:0;height:100%}

@@ -751,7 +751,8 @@ function updateDyn(el) {
     }
     if (hit && usedSet.has(mb.label)) s += `<circle cx="${x * U}" cy="${y * U}" r="${Math.min(hit.d, 12) * U}" fill="none" stroke="var(--teal)" stroke-width="3" opacity=".35"/>`;
     s += `<circle cx="${x * U}" cy="${y * U}" r="${hit ? 6.5 * K : 5.5 * K}" fill="${hit ? 'var(--teal)' : 'var(--gray)'}"/>`;
-    s += `<text x="${x * U}" y="${(y * U) - 9 * K}" text-anchor="middle" font-family="var(--f-mono)" font-size="24" fill="var(--ink)">${esc(mb.label)}</text>`;
+    // 番号は壁（黒い線）と見分けやすい青にし、背景色のふちどりを付ける
+    s += `<text x="${x * U}" y="${(y * U) - 9 * K}" text-anchor="middle" font-family="var(--f-mono)" font-size="24" font-weight="700" fill="var(--blabel)" stroke="var(--surface)" stroke-width="6" stroke-linejoin="round" paint-order="stroke">${esc(mb.label)}</text>`;
   });
   if (st.pos && el.dataset.nav !== '1') {
     const px = st.pos.x * U, py = st.pos.y * U;
