@@ -178,7 +178,8 @@ def conclusion(rows):
     """結論（アプリに使う A と n）の Markdown の行"""
     cm, cmed, crel = dist_err(rows, CUR_A, CUR_N)
     A, n, m, med, rel = best_by_distance(rows)
-    out = ['## 結論：アプリに使う A（1m 地点の値）と n（減衰係数）\n']
+    out = ['## 結論：アプリに使う A（1m 地点の値）と n（減衰係数）\n',
+           '> アプリに入れるべき A と n です。ふだんはここだけ見れば十分です（下の 1.〜5. は根拠と詳しい分析）。\n']
     ds = [r['d'] for r in rows]
     if len(rows) < MIN_ROWS or max(ds) / min(ds) < 3:
         out.append(f'**今の値（A = {CUR_A:.0f} dBm、n = {CUR_N:.1f}）のままにしてください。**'
@@ -236,6 +237,8 @@ def main():
     # 1) 基準条件だけで A と n
     base_rows = [r for r in rows if all(r[col] == base for col, _, base in FACTORS)]
     p('## 1. 距離の式（基準条件：体 正面・縦・障害物なし）\n')
+    p('> 条件のそろった測定だけで、「RSSI が距離に対してどう下がるか」の式に当てはめた A と n です。'
+      '推定距離の誤差を最小にした値ではないので、アプリには入れません（入れるのは「結論」の値）。\n')
     if len({round(math.log10(r['d']), 3) for r in base_rows}) >= 2:
         c, _, rmse, _ = fit(base_rows, [])
         A0, n0 = c['A'], c['n']
@@ -251,6 +254,8 @@ def main():
     # 2) 全データで条件のずれを同時に
     c, ok, rmse, _ = fit(rows, FACTORS)
     p('\n## 2. 条件ごとの RSSI のずれ（全データで同時に当てはめ）\n')
+    p('> 体の向き・端末の向き・障害物によって、電波が基準条件より何 dB 弱く（＋は強く）なるかです。'
+      'アプリはこのずれを補正しないので、「距離への影響」の倍率だけ推定距離がずれます。どの条件の影響が大きいかが分かります。\n')
     p(f'- 全 {len(rows)} 行：A = {c["A"]:.1f} dBm、n = {c["n"]:.2f}（RMSE {rmse:.1f} dB）\n')
     p('| 条件 | 値 | 行数 | ずれ (dB) | 距離への影響 |')
     p('|---|---|---:|---:|---|')
@@ -268,7 +273,8 @@ def main():
 
     # 3) ビーコン（iPhone）ごとのずれ
     p('\n## 3. ビーコン（iPhone）ごとの残差の平均\n')
-    p('端末ごとに送信の強さが違うと、ここが ±3dB 以上になる。大きいビーコンは「1mで補正」を使う。\n')
+    p('> iPhone ごとの電波の強さのくせです。同じ距離・同じ条件でも、iPhone によって電波が強め（＋）・弱め（−）になります。'
+      '±3dB 以上の iPhone は距離が狂いやすいので、そのビーコンの「1mで補正」を使います。\n')
     p('| ビーコン | 行数 | 残差の平均 (dB) |')
     p('|---|---:|---:|')
     per = defaultdict(list)
@@ -280,6 +286,8 @@ def main():
 
     # 4) 距離の誤差の比較
     p('\n## 4. 推定距離の誤差（全データ）\n')
+    p('> A・n の候補ごとに、アプリが出す推定距離が実際の距離とどれだけずれるかを比べた表です。'
+      '誤差が小さいほど、その A・n で距離が合います。「結論」の判断のもとになる比較です。\n')
     p('| 式の値 | 平均絶対誤差 (m) | 中央値 (m) | 平均誤差率 (%) |')
     p('|---|---:|---:|---:|')
     cand = [(f'今のアプリ（A={CUR_A:.0f}, n={CUR_N:.1f}）', CUR_A, CUR_N, None)]
@@ -293,6 +301,8 @@ def main():
 
     # 5) 距離ごとの平均 RSSI（グラフ用）
     p('\n## 5. 実際の距離ごとの RSSI（基準条件）\n')
+    p('> 実際の距離ごとに、測った RSSI の平均と、式から予測した RSSI を並べた表です。'
+      '距離が離れるほど RSSI がちゃんと下がっているかを確かめられます（グラフにするときの元データにもなります）。\n')
     p('| 実際の距離・斜め (m) | 行数 | RSSI 平均 | 式の予測（全データ） |')
     p('|---:|---:|---:|---:|')
     byd = defaultdict(list)
@@ -315,7 +325,7 @@ def main():
         with open(o, 'w', encoding='utf-8') as f:
             f.write(text)
     if a.summary:
-        print('\n'.join(l for l in summary if not l.startswith('|---')).replace('**', ''))
+        print('\n'.join(l[2:] if l.startswith('> ') else l for l in summary if not l.startswith('|---')).replace('**', ''))
         for o in outs:
             print(f'\n結果をすべて保存しました：{o}')
     else:
