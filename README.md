@@ -25,7 +25,8 @@ miminavi-app/
 ├── map/floor.drawio                  … フロアマップ（draw.io）。図面を変えるときはここを編集
 ├── tools/
 │   ├── drawio_to_map.py              … draw.io → アプリ用の地図データ（map.js）に変換
-│   └── analyze_rssi.py               … 測定結果 CSV の分析（距離の式の値 A・n、体の向き・壁のずれ）
+│   ├── analyze_rssi.py               … 測定結果 CSV の分析（距離の式の値 A・n、体の向き・壁のずれ）
+│   └── RSSI分析.bat                  … Windows で analyze_rssi.py をダブルクリック／ドラッグ＆ドロップで動かす
 ├── app/
 │   ├── build.gradle.kts              … アプリのビルド設定（バージョン番号・署名・SDK）
 │   ├── debug.keystore                … APK の署名用キー（検証用。公開してよいもの）
@@ -105,6 +106,7 @@ MainActivity.java ── 読み上げ・音声認識・CSV の保存・画面を
 | `map/floor.drawio` | フロアマップの元データ。draw.io で編集する（書き方は「フロアマップの更新方法」） |
 | `tools/drawio_to_map.py` | `floor.drawio` を読み、縮尺を合わせて `app/src/main/assets/map.js` を作る。GitHub Actions のビルドのたびに自動で実行される |
 | `tools/analyze_rssi.py` | 「結果を書き出す（CSV）」の CSV から、距離の式の値（A・n）と、体の向き・向き・障害物ごとの RSSI のずれを求める（使い方は「測定データの分析」） |
+| `tools/RSSI分析.bat` | Windows 用。`analyze_rssi.py` を動かし、結果（`RSSI分析結果.md`）をメモ帳で開く。Shift_JIS・CRLF で保存している |
 
 ### ビルドの設定
 
@@ -189,6 +191,29 @@ RSSI・推定距離の測定（測定手順書・測定結果一覧の Excel）�
 ```
 python3 tools/analyze_rssi.py 測定結果1.csv 測定結果2.csv --out 分析結果.md
 ```
+
+フォルダを渡すと、その中（サブフォルダも）の測定結果 CSV（`*測定結果*.csv`。生データは使わない）をすべて使います。何も渡さないと、近くの「測定データ」フォルダ（今のフォルダ・ツールのフォルダ・その1つ上）を探します。同じ記録を含む CSV が何個あっても、同じ記録は1回だけ数えます。
+
+```
+python3 tools/analyze_rssi.py 測定データ --out 分析結果.md
+```
+
+**Windows で使う（バッチ）**：`tools/RSSI分析.bat` と `tools/analyze_rssi.py` を同じフォルダに置き、`RSSI分析.bat` をダブルクリックします（Python 3 が必要。https://www.python.org/downloads/ から入れ、インストール画面で「Add python.exe to PATH」にチェック）。
+
+```
+音声スマートナビゲーション
+├─ツール
+│      RSSI分析.bat        … ダブルクリック
+│      analyze_rssi.py
+│      RSSI分析結果.md      … 結果（メモ帳で開く）
+└─測定データ
+    ├─20261102
+    │      miminavi_測定結果_20261102-1527.csv
+    └─20261104
+           miminavi_測定結果_20261104-1117.csv
+```
+
+CSV やフォルダを `RSSI分析.bat` の上にドラッグ＆ドロップすると、それだけを分析します。
 
 距離の式 RSSI = A − 10·n·log10(d) に最小二乗で当てはめ、次を出します。
 

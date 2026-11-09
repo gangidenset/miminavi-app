@@ -11,6 +11,10 @@
   python3 tools/analyze_rssi.py *.csv --out report.md      # 結果を Markdown にも保存
   python3 tools/analyze_rssi.py *.csv --raw                # 4秒平均ではなく生の受信値の平均で当てはめる
   python3 tools/analyze_rssi.py *.csv --slant              # 手入力の「実際の距離」が斜めの距離のとき
+  python3 tools/analyze_rssi.py 測定データ                  # フォルダを渡すと、中（サブフォルダも）の測定結果 CSV をすべて使う
+  python3 tools/analyze_rssi.py                             # 何も渡さないと、近くの「測定データ」フォルダを探して使う
+
+  Windows では tools/RSSI分析.bat をダブルクリックするか、CSV・フォルダをその上にドラッグ＆ドロップしても動く。
 
   高さの補正：手入力の「実際の距離」は床の上の（水平の）距離として、iPhone と Android の高さが両方入っていれば
   斜めの距離 √(水平の距離² + 高さの差²) にしてから当てはめる（例 デスク 0.7m・手持ち 1.4m なら差 0.7m）。
@@ -24,6 +28,7 @@ import argparse
 import csv
 import math
 import sys
+from pathlib import Path
 from collections import Counter, defaultdict
 
 CUR_A, CUR_N = -45.0, 4.0
@@ -65,6 +70,34 @@ def read_rows(paths, use_raw, slant=False):
                     lv[col] = v or base   # 空欄（以前の記録）は基準扱い
                 rows.append({'d': d, 'rssi': rssi, 'beacon': r.get('対象ビーコン', ''), **lv})
     return rows
+
+
+DATA_DIR = '測定データ'
+CSV_PATTERN = '*測定結果*.csv'   # 「結果を書き出す」の CSV（miminavi_測定結果_日付-時刻.csv）。生データは使わない
+
+
+def expand_paths(paths):
+    """ファイルはそのまま、フォルダは中（サブフォルダも）の測定結果 CSV に展開する。
+    何も渡されなければ、今のフォルダ・このファイルのフォルダ・その上のフォルダにある「測定データ」を探す。"""
+    if not paths:
+        here = Path(__file__).resolve().parent
+        cands = [Path.cwd() / DATA_DIR, here / DATA_DIR, here.parent / DATA_DIR]
+        found = next((c for c in cands if c.is_dir()), None)
+        if not found:
+            sys.exit('「測定データ」フォルダが見つかりません。CSV かフォルダを指定してください（探した場所：'
+                     + '、'.join(str(c) for c in cands) + '）')
+        paths = [str(found)]
+    files = []
+    for p in map(Path, paths):
+        if p.is_dir():
+            files += sorted(p.rglob(CSV_PATTERN))
+        elif p.is_file():
+            files.append(p)
+        else:
+            sys.exit(f'見つかりません：{p}')
+    if not files:
+        sys.exit(f'測定結果の CSV（{CSV_PATTERN}）が見つかりません：' + '、'.join(paths))
+    return [str(f) for f in files]
 
 
 def solve(X, y):
@@ -120,18 +153,19 @@ def dist_err(rows, A, n, offsets=None):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('csv', nargs='+')
+    ap.add_argument('csv', nargs='*', help='測定結果 CSV またはフォルダ（省略すると「測定データ」フォルダを探す）')
     ap.add_argument('--raw', action='store_true', help='生RSSI平均値で当てはめる（既定は アプリが使う4秒平均の RSSI平均値）')
     ap.add_argument('--slant', action='store_true', help='手入力の「実際の距離」を斜めの距離としてそのまま使う（高さで補正しない）')
     ap.add_argument('--out', help='結果を Markdown で保存するファイル')
     a = ap.parse_args()
 
+    a.csv = expand_paths(a.csv)
     rows = read_rows(a.csv, a.raw, a.slant)
     if len(rows) < 3:
         sys.exit('使える行が足りません（実際の距離と RSSI が入った行が 3 行以上必要）')
     out = []
     p = out.append
-    p(f'# RSSI 分析結果\n\n対象：{len(rows)} 行（{", ".join(a.csv)}）　RSSI：{"生の受信値の平均" if a.raw else "4秒平均（アプリと同じ）"}\n')
+    p(f'# RSSI 分析結果\n\n対象：{len(rows)} 行（CSV {len(a.csv)} 個：{", ".join(Path(f).name for f in a.csv)}。同じ記録は1回だけ数える）　RSSI：{"生の受信値の平均" if a.raw else "4秒平均（アプリと同じ）"}\n')
 
     # 1) 基準条件だけで A と n
     base_rows = [r for r in rows if all(r[col] == base for col, _, base in FACTORS)]
@@ -140,6 +174,10 @@ def main():
         c, _, rmse, _ = fit(base_rows, [])
         A0, n0 = c['A'], c['n']
         p(f'- {len(base_rows)} 行から：**A = {A0:.1f} dBm、n = {n0:.2f}**（当てはめの残差 RMSE {rmse:.1f} dB）')
+        ds = [r['d'] for r in base_rows]
+        if len(base_rows) < 10 or max(ds) / min(ds) < 3:
+            p(f'- ※ 行数（{len(base_rows)} 行）か距離の幅（{min(ds):.1f}〜{max(ds):.1f}m）が足りないため、参考にしかならない値です。'
+              '体 正面・縦・障害物なしで、1m〜5m 以上の距離を測ると求まります')
     else:
         A0 = n0 = None
         p(f'- 基準条件の行が {len(base_rows)} 行で、距離が 2 種類以上ないため求められません')
