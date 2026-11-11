@@ -43,6 +43,10 @@ const walkable = (x, y) => x >= 0 && y >= 0 && x < GW && y < GH && ROWS[y][x] !=
 const LANES = G.lanes || null;
 const isLane = (x, y) => !!LANES && LANES[y][x] === '1';
 const OFF_LANE_COST = 10;           // 案内ルートの外を1マス進むときの追加コスト
+// 案内ルートのマスのうち、マスの中心が赤い枠の内側にあるもの。ルートの線が枠からはみ出ないよう、ここを優先する
+const LANE_CORE = G.laneCore || null;
+const isLaneCore = (x, y) => !LANE_CORE || LANE_CORE[y][x] === '1';
+const LANE_EDGE_COST = 2;           // 赤い枠のふち（中心が枠の外）のマスを進むときの追加コスト
 const cellCenter = c => [GX + (c[0] + 0.5) * CELL, GY + (c[1] + 0.5) * CELL];
 const cellOf = p => [Math.floor((p[0] - GX) / CELL), Math.floor((p[1] - GY) / CELL)];
 const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
@@ -920,7 +924,19 @@ function choose(dest, heard) {
 }
 
 // ------------------------------------------------------------ ルート探索（ダイクストラ法：壁ぎわと曲がり角を避けた最短ルート）
+// 案内ルート（赤い枠）がある図面では、赤い枠のマスだけを通る。現在地のアイコンは赤い枠の上しか動かないので、
+// ルートも枠の上だけにしないと、ルートの先（目的地）までアイコンが届かず、到着にならない。
+// 出発点・目的地が枠の外なら、いちばん近い枠のマスから・までのルートにする。枠の上でつながらないときだけ、枠の外も通る
 function route(s, g) {
+  if (LANES) {
+    const ls = isLane(s[0], s[1]) ? s : nearestLaneCell(cellCenter(s), null);
+    const lg = isLane(g[0], g[1]) ? g : nearestLaneCell(cellCenter(g), null);
+    const p = ls && lg ? routeOn(ls, lg, true) : null;
+    if (p) return p;
+  }
+  return routeOn(s, g, false);
+}
+function routeOn(s, g, laneOnly) {
   if (!walkable(s[0], s[1])) s = nearestFree(cellCenter(s));
   const n = GW * GH * 4, cost = new Float64Array(n).fill(Infinity), prev = new Int32Array(n).fill(-1);
   const heap = [];   // [cost, state]
@@ -939,8 +955,9 @@ function route(s, g) {
     }
     for (let nd = 0; nd < 4; nd++) {
       const nx = x + DIRS[nd][0], ny = y + DIRS[nd][1];
-      if (!walkable(nx, ny)) continue;
-      const step = LANES ? (isLane(nx, ny) ? 0 : OFF_LANE_COST + (STEP_COST[ROWS[ny][nx]] || 0)) : (STEP_COST[ROWS[ny][nx]] || 0);
+      if (!walkable(nx, ny) || (laneOnly && !isLane(nx, ny))) continue;
+      const step = laneOnly ? (isLaneCore(nx, ny) ? 0 : LANE_EDGE_COST)
+        : LANES ? (isLane(nx, ny) ? 0 : OFF_LANE_COST + (STEP_COST[ROWS[ny][nx]] || 0)) : (STEP_COST[ROWS[ny][nx]] || 0);
       const nc = c + 1 + step + (nd !== d ? TURN_COST : 0);
       const nk = key(nx, ny, nd);
       if (nc < cost[nk]) { cost[nk] = nc; prev[nk] = k; push(nc, nk); }
