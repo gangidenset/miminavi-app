@@ -230,9 +230,12 @@ function onStep(d) {
 //  1歩ごとに、歩幅だけ進める。進む向きは、コンパスの向き（方角合わせで図面の上を 0°）に近い方。
 //  案内中は案内ルートの上を前か後ろへ、それ以外は赤いラインの上を進む（分かれ道では向きに近い方の道）。
 //  向きとルートの方向が 60° 以上違うとき（曲がっている途中・ルートの外を向いている）は進めない。
+//  ただし案内中は、コンパスを使わず、1歩ごとにルートの先（行き先の方）へ進める。案内中はルートに沿って歩く前提で、
+//  建物の中でコンパスがずれると進めなくなり、現在地がビーコンからビーコンへ跳ぶため。戻ったときは RSSI の位置で引き戻す。
 //  RSSI の位置は、ずれを直すために少しずつ寄せる（estimate の PDR_RSSI_K）。ビーコンの真横ではしっかり寄せる
 const PDR_TURN_COS = 0.5;   // 向きとルートの方向の差が 60° 以内の方へだけ進む
 const PDR_RSSI_K = 0.25;    // 歩数で進めているとき、RSSI の位置に寄せる割合（0.5秒あたり）
+const NAV_PDR_RSSI_K = 0.1; // 案内中に歩数で進めているとき、RSSI の位置に寄せる割合（0.5秒あたり。歩数を優先する）
 // コンパスの値がないときの説明
 const compassMissing = () => !N ? 'PC ブラウザではコンパスを使えません'
   : st.status && st.status.compass === 'none' ? 'この端末にはコンパス（地磁気センサー）がありません'
@@ -244,7 +247,8 @@ const mapHeading = () => st.heading == null ? null
   : usingCalib() ? (st.heading - st.data.northOffset + 360) % 360
   : st.data.headRef === 'map' ? (st.heading + st.data.mapNorth + 360) % 360 : null;
 const headVec = deg => { const r = deg * Math.PI / 180; return [Math.sin(r), -Math.cos(r)]; };   // 0°=図面の上、90°=右
-const pdrActive = () => st.data.pdr && st.data.posMode !== 'dist' && hasStepSensor() && mapHeading() != null && !!LANES;
+const navPdr = () => !!(st.nav && !st.nav.sim);   // 案内中（デモ歩行でない）は、コンパスを使わずルートの先へ進める
+const pdrActive = () => st.data.pdr && st.data.posMode !== 'dist' && hasStepSensor() && !!LANES && (navPdr() || mapHeading() != null);
 function pdrWhyOff() {
   if (!st.data.pdr) return 'オフ';
   if (st.data.posMode === 'dist') return '「距離から計算」では使わない';
@@ -256,8 +260,9 @@ function pdrWhyOff() {
 }
 function pdrStep() {
   if (!pdrActive() || !st.pos) return;
-  const v = headVec(mapHeading()), len = st.data.stepLen;
-  const np = st.nav && !st.nav.sim ? stepOnPath(st.nav.path, st.pos.raw, v, len) : stepOnLanes(st.pos.raw, v, len);
+  const len = st.data.stepLen;
+  const np = navPdr() ? stepAlongPath(st.nav.path, nearestIdxOnPath(st.nav.path, st.pos.raw), 1, len)
+    : stepOnLanes(st.pos.raw, headVec(mapHeading()), len);
   st.pdrLast = np ? 'ok' : 'turn';
   if (np) { st.pos.raw = np; st.pdrSteps = (st.pdrSteps || 0) + 1; }
 }
@@ -292,7 +297,11 @@ function stepOnPath(path, p, v, len) {
   const L = dist(a, b); if (!L) return null;
   const c = ((b[0] - a[0]) * v[0] + (b[1] - a[1]) * v[1]) / L;
   if (Math.abs(c) < PDR_TURN_COS) return null;
-  const dir = c > 0 ? 1 : -1;
+  return stepAlongPath(path, i, c > 0 ? 1 : -1, len);
+}
+// 案内ルートの path[i] から、dir（1：行き先の方、-1：戻る方）へ len だけ進んだ点
+function stepAlongPath(path, i, dir, len) {
+  if (!path || path.length < 2) return null;
   let cur = cellCenter(path[i]), rest = len, j = i;
   while (rest > 0) {
     const nj = j + dir; if (nj < 0 || nj >= path.length) break;
@@ -435,12 +444,20 @@ function estimate() {
   if (!st.pos) st.posSince = now;
   const prevRoom = st.room;
   decideRoom(all);   // 今いる部屋（到着判定に使う）
-  let used = all.slice(0, 3), prox = null;
+  let used = all.slice(0, 3), prox = null, nearAhead = false;
   const prev = st.pos ? st.pos.raw : null;
   let p, method;
   if (st.data.posMode !== 'dist') {
     prox = proximity(all); p = prox.p; used = prox.used; method = `近接型（${used.length}台）`;
-    const nb = decideNear(all);   // ビーコンの真横にいるときは、そのビーコンの点に引っ張る
+    let nb = decideNear(all);   // ビーコンの真横にいるときは、そのビーコンの点に引っ張る
+    // 案内中は、ビーコンがルートの上で今の位置より前か後ろかを見る
+    //  後ろ（通り過ぎた）… 引き戻さない（歩数でルートの先へ進めた位置が、後ろのビーコンへ戻されないように）
+    //  前 … すぐに追いつく（nearAhead。止まっていても、到着の判定に間に合うように）
+    if (nb && navPdr() && st.pos && st.pos.path === st.nav.path && st.pos.pathIdx != null) {
+      const ai = nearestIdxOnPath(st.nav.path, laneAnchor(nb.mb.at));
+      if (ai < st.pos.pathIdx - NEAR_BEHIND_CELLS) nb = null;
+      else if (ai > st.pos.pathIdx + NEAR_BEHIND_CELLS) nearAhead = true;
+    }
     if (nb) { p = laneAnchor(nb.mb.at); used = [nb]; prox.near = nb; method = `近接型（${nb.mb.label} のそば）`; }
   }
   else if (used.length === 1) { p = onePoint(used[0], prev); method = '1点測位'; }
@@ -452,9 +469,13 @@ function estimate() {
   // 前回となめらかにつなぐ（部屋が変わったときはそのまま移る）
   // 止まっているときは、部屋が変わっても、ビーコンの真横に引っ張るときも、少しずつしか動かさない（約10秒で追いつく）
   // 歩数で進めているときは、RSSI の位置には少しずつ寄せる（ビーコンの真横ではしっかり寄せる）
+  // 案内中は歩数を優先し、RSSI の位置にはさらに少しずつ寄せる（ビーコンの真横でも同じ。そこで止まらないように）。
+  // ただし、ルートの先のビーコンの真横に着いたときは、止まっていてもすぐ追いつく
   const still = holdingStill(), pdr = pdrActive();
   if (prev && (prevRoom === st.room || still || pdr)) {
-    const k = kFor(still ? HOLD_K : pdr && !(prox && prox.near) ? PDR_RSSI_K : MOVE_K, dtS);
+    const k0 = nearAhead ? MOVE_K : still ? HOLD_K
+      : pdr ? (navPdr() ? NAV_PDR_RSSI_K : prox && prox.near ? MOVE_K : PDR_RSSI_K) : MOVE_K;
+    const k = kFor(k0, dtS);
     p = [prev[0] + k * (p[0] - prev[0]), prev[1] + k * (p[1] - prev[1])];
   }
   const raw = p;
@@ -490,10 +511,12 @@ function proximity(all) {
 }
 // ビーコンの真横（約1m以内）にいるかの判定。距離は不正確でも、1m以内ならはっきり強くなる（実測：1m −56、2m以上 −60以下）
 //  なる条件：1m地点の強さ − NEAR_ENTER_DB 以上で、2番目より NEAR_LEAD_DB 以上強い状態が NEAR_MS 続く
-//  やめる条件：1m地点の強さ − NEAR_EXIT_DB を下回るか、2番目との差が NEAR_HOLD_DB を下回る（すぐに出入りしないよう、なる条件よりゆるい）
+//  やめる条件：1m地点の強さ − NEAR_EXIT_DB を下回るか、2番目との差が NEAR_HOLD_DB を下回る（すぐに出入りしないよう、なる条件より少しゆるい。
+//  ゆるすぎると、ビーコンから離れても現在地がそのビーコンの点に止まったままになる）
 //  1m地点の強さは「1mで補正」した値。補正していなければ実測の平均 NEAR_1M_DEFAULT を使う
 //  （距離の式の標準値 −45 は距離の当てはめ用の値で、実際の 1m 地点の強さとは違うため）
-const NEAR_1M_DEFAULT = -55, NEAR_ENTER_DB = 3, NEAR_EXIT_DB = 5, NEAR_LEAD_DB = 3, NEAR_HOLD_DB = 1, NEAR_MS = 500;
+const NEAR_1M_DEFAULT = -55, NEAR_ENTER_DB = 3, NEAR_EXIT_DB = 4, NEAR_LEAD_DB = 3, NEAR_HOLD_DB = 2, NEAR_MS = 500;
+const NEAR_BEHIND_CELLS = 3;   // 案内中、現在地よりこのマス数（0.2m × 3）以上うしろのビーコンは「そば」にしない
 const oneMeterOf = label => typeof st.data.tx[label] === 'number' ? st.data.tx[label] : NEAR_1M_DEFAULT;
 function decideNear(all) {
   const s = all.slice().sort((a, c) => strength(c) - strength(a));
@@ -1218,7 +1241,7 @@ function renderPlan(full) {
   const pl = st.pos && st.pos.pull;
   $('planPull').textContent = !st.data.pull ? 'オフ' : pl && pl.to ? `${pl.to.mb.label} の方へ ${Math.round(pl.w * 100)}%（最大 ${st.data.pull}%）` : '引っ張っていない（2台が同じくらいの強さ）';
   $('planWalk').textContent = !hasStepSensor() ? '歩数センサーなし（止まっていても位置を固定しない）'
-    : `${walkLabel()}（歩数 ${st.steps}）${st.pos && st.pos.still ? '・位置をほぼ固定中' : ''}${pdrActive() ? `・歩数で進める（歩幅 ${st.data.stepLen}m・向き ${Math.round(mapHeading())}°${st.pdrLast === 'turn' ? '・ルートの方向を向いていないので止める' : ''}）` : ''}`;
+    : `${walkLabel()}（歩数 ${st.steps}）${st.pos && st.pos.still ? '・位置をほぼ固定中' : ''}${pdrActive() ? `・歩数で進める（歩幅 ${st.data.stepLen}m・${navPdr() ? 'ルートの先へ' : `向き ${Math.round(mapHeading())}°${st.pdrLast === 'turn' ? '・ルートの方向を向いていないので止める' : ''}`}）` : ''}`;
   $('planUsed').textContent = !st.pos ? '—'
     : st.pos.prox && st.pos.prox.near ? `${st.pos.method}：${st.pos.prox.near.mb.label} ${Math.round(st.pos.prox.near.b.rssi)}dBm（1m地点 ${oneMeterOf(st.pos.prox.near.mb.label)}dBm${typeof st.data.tx[st.pos.prox.near.mb.label] === 'number' ? '・補正' : '・標準'}${st.pos.prox.diff != null ? `、2番目より ${st.pos.prox.diff.toFixed(1)}dB 強い` : ''}）`
     : st.pos.prox ? `${st.pos.method}：` + st.pos.used.map(u => `${u.mb.label} ${Math.round(u.b.rssi)}dBm`).join(' / ')
@@ -1445,7 +1468,9 @@ function renderBeacons() {
     : st.data.headRef === 'calib' && st.data.northOffset == null ? 'まだ方角合わせをしていません（案内を始めるときの「方角合わせ」で合わせる）。'
     : `今の向き：図面の上から ${Math.round(mapHeading())}°（コンパス ${Math.round(st.heading)}°）`;
   if (document.activeElement !== $('stepLen')) $('stepLen').value = st.data.stepLen;
-  $('pdrState').textContent = pdrActive() ? `使用中：図面の上から ${Math.round(mapHeading())}° の向き` : `使っていない：${pdrWhyOff()}`;
+  $('pdrState').textContent = !pdrActive() ? `使っていない：${pdrWhyOff()}`
+    : navPdr() ? '使用中：案内中はコンパスを使わず、1歩ごとにルートの先へ進める'
+    : `使用中：図面の上から ${Math.round(mapHeading())}° の向き（案内中はコンパスを使わず、ルートの先へ進める）`;
   $('walkState').textContent = hasStepSensor() ? `今：${walkLabel()}（歩数 ${st.steps}）` : 'この端末では歩数を数えられないため、使いません。';
   if (document.activeElement !== $('hBeacon')) $('hBeacon').value = st.data.beaconH;
   if (document.activeElement !== $('hPhone')) $('hPhone').value = st.data.phoneH;
@@ -2003,5 +2028,5 @@ if (N) {
   startMock();
 }
 // テスト用
-window.__mimi = { pullToStrongest, proximity, decideNear, onStep, isWalking, pdrActive, stepOnLanes, stepOnPath, lanePathPts, laneAnchor, BEACONS, route, segments, matchDest, DESTS, ENTRY, st, startNav, doorsOnPath, atDest, roomAt, estimate, rec };
+window.__mimi = { pullToStrongest, proximity, decideNear, onStep, isWalking, pdrActive, stepOnLanes, stepOnPath, stepAlongPath, navPdr, lanePathPts, laneAnchor, BEACONS, route, segments, matchDest, DESTS, ENTRY, st, startNav, doorsOnPath, atDest, roomAt, estimate, rec };
 })();
