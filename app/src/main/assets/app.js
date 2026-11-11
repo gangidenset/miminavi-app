@@ -107,7 +107,7 @@ const MAP_NORTH_DEFAULT = 36;
 const st = {
   view: 'home', tab: 'guide', sound: true,
   status: null, beacons: [], others: 0, scanning: false,
-  heading: null, pos: null, nav: null, room: null, roomCand: null, roomCandN: 0, near: null, nearCand: null, nearCandN: 0, steps: 0, stepTimes: [], posAge: 0,
+  heading: null, pos: null, nav: null, room: null, roomCand: null, roomCandAt: 0, near: null, nearCand: null, nearCandAt: 0, steps: 0, stepTimes: [], posSince: null, estAt: 0,
   data: { v: 2, n: 4.0, tx: {}, northOffset: null, assign: {}, uuids: [], moved: {}, beaconH: '', phoneH: '', posMode: 'prox', holdStill: true, pdr: true, stepLen: 0.5, headRef: 'map', mapNorth: MAP_NORTH_DEFAULT, pull: 30 },
   browse: false, raw: [],
   placing: null,
@@ -217,7 +217,8 @@ function setUuids(list) {
 }
 // 歩数（加速度センサーから1歩ごとに届く）。直近 WALK_WINDOW_MS に WALK_STEPS 歩以上あれば「歩いている」
 const WALK_WINDOW_MS = 2500, WALK_STEPS = 2;
-const HOLD_K = 0.05;   // 止まっているとき、新しい位置に寄せる割合（0.5秒ごと。歩いているときは 0.5）
+const HOLD_K = 0.05;   // 止まっているとき、新しい位置に寄せる割合（0.5秒あたり。歩いているときは MOVE_K）
+const MOVE_K = 0.5;    // ふだん、新しい位置に寄せる割合（0.5秒あたり）
 function onStep(d) {
   st.steps = typeof d.n === 'number' ? d.n : st.steps + 1;
   const now = Date.now();
@@ -231,7 +232,7 @@ function onStep(d) {
 //  向きとルートの方向が 60° 以上違うとき（曲がっている途中・ルートの外を向いている）は進めない。
 //  RSSI の位置は、ずれを直すために少しずつ寄せる（estimate の PDR_RSSI_K）。ビーコンの真横ではしっかり寄せる
 const PDR_TURN_COS = 0.5;   // 向きとルートの方向の差が 60° 以内の方へだけ進む
-const PDR_RSSI_K = 0.25;    // 歩数で進めているとき、RSSI の位置に寄せる割合（0.5秒ごと）
+const PDR_RSSI_K = 0.25;    // 歩数で進めているとき、RSSI の位置に寄せる割合（0.5秒あたり）
 // コンパスの値がないときの説明
 const compassMissing = () => !N ? 'PC ブラウザではコンパスを使えません'
   : st.status && st.status.compass === 'none' ? 'この端末にはコンパス（地磁気センサー）がありません'
@@ -307,9 +308,9 @@ function isWalking() {
 }
 const hasStepSensor = () => !!(st.status && st.status.stepSensor);
 // 止まっているときは位置をほぼ動かさない（RSSI のゆれで位置が動かないように）。歩数が取れない端末では使わない。
-// 位置が出てから HOLD_AFTER 回（0.5秒ごと）までは固定しない（最初の1回の値がずれていても、そこで止まらないように）
-const HOLD_AFTER = 10;
-const holdingStill = () => st.data.holdStill && hasStepSensor() && !isWalking() && st.posAge >= HOLD_AFTER;
+// 位置が出てから HOLD_AFTER_MS までは固定しない（最初の値がずれていても、そこで止まらないように）
+const HOLD_AFTER_MS = 5000;
+const holdingStill = () => st.data.holdStill && hasStepSensor() && !isWalking() && st.posSince != null && Date.now() - st.posSince >= HOLD_AFTER_MS;
 const walkLabel = () => !hasStepSensor() ? 'センサーなし' : isWalking() ? '歩いている' : '止まっている';
 function onBeacons(d) {
   const raw = d.beacons || [];
@@ -394,7 +395,7 @@ function floorDist(d, label) {
 // 1m地点の強さで補正した電波の強さ（大きいほど近い）
 const strength = u => u.b.rssi - txOf(u.mb.label);
 const ROOM_SWITCH_DB = 3;     // 別の部屋に切り替える差（dB）
-const ROOM_SWITCH_COUNT = 2;  // 何回続いたら切り替えるか（0.5秒ごと）
+const ROOM_SWITCH_MS = 500;   // 別の部屋の方が強い状態がこの時間続いたら切り替える
 function decideRoom(all) {
   // 部屋ごとに、その部屋にあるビーコンのいちばん強い値
   const score = new Map();
@@ -408,8 +409,9 @@ function decideRoom(all) {
   const cur = st.room && score.get(st.room.name);
   if (!st.room || !cur) { st.room = top.r; st.roomCand = null; return; }
   if (top.r.name !== st.room.name && top.v - cur.v >= ROOM_SWITCH_DB) {
-    if (st.roomCand === top.r.name) { if (++st.roomCandN >= ROOM_SWITCH_COUNT) { st.room = top.r; st.roomCand = null; } }
-    else { st.roomCand = top.r.name; st.roomCandN = 1; }
+    const now = Date.now();
+    if (st.roomCand === top.r.name) { if (now - st.roomCandAt >= ROOM_SWITCH_MS) { st.room = top.r; st.roomCand = null; } }
+    else { st.roomCand = top.r.name; st.roomCandAt = now; }
   } else st.roomCand = null;
 }
 // ------------------------------------------------------------ 測位
@@ -420,10 +422,17 @@ function decideRoom(all) {
 //  2台    … 2点測位：2つの円の交点。交点が2つあれば、前回の位置・案内ルートに近い方。交わらなければ2台を結ぶ線の上
 //  3台以上 … 近い3台で3点測位：3つの円の式を引き算した連立方程式を解く。3台が一直線に近いときは最小二乗で探す
 //  d は各ビーコンまでの推定距離（d = 10^((A − RSSI) ÷ (10 × n))）
+// 位置の計算は、ビーコンの一覧が届くたび（Android 側で PUBLISH_MS = 0.2 秒ごと）に行う。
+// 寄せる割合は「0.5 秒あたり」の値で決めてあり、前回からの経過時間で換算する（届く間隔を変えても動きが変わらない）
+const BASE_TICK_S = 0.5;
+const kFor = (k, dtS) => 1 - Math.pow(1 - k, dtS / BASE_TICK_S);
 function estimate() {
   const all = [...seenByLabel().values()].sort((a, c) => a.d - c.d);
-  if (!all.length) { st.pos = null; st.room = null; st.near = null; st.nearCand = null; st.posAge = 0; return; }
-  st.posAge = st.pos ? st.posAge + 1 : 0;
+  const now = Date.now();
+  const dtS = st.estAt ? Math.min(2, Math.max(0, (now - st.estAt) / 1000)) : BASE_TICK_S;
+  st.estAt = now;
+  if (!all.length) { st.pos = null; st.room = null; st.near = null; st.nearCand = null; st.posSince = null; return; }
+  if (!st.pos) st.posSince = now;
   const prevRoom = st.room;
   decideRoom(all);   // 今いる部屋（到着判定に使う）
   let used = all.slice(0, 3), prox = null;
@@ -445,7 +454,7 @@ function estimate() {
   // 歩数で進めているときは、RSSI の位置には少しずつ寄せる（ビーコンの真横ではしっかり寄せる）
   const still = holdingStill(), pdr = pdrActive();
   if (prev && (prevRoom === st.room || still || pdr)) {
-    const k = still ? HOLD_K : pdr && !(prox && prox.near) ? PDR_RSSI_K : 0.5;
+    const k = kFor(still ? HOLD_K : pdr && !(prox && prox.near) ? PDR_RSSI_K : MOVE_K, dtS);
     p = [prev[0] + k * (p[0] - prev[0]), prev[1] + k * (p[1] - prev[1])];
   }
   const raw = p;
@@ -480,11 +489,11 @@ function proximity(all) {
   return { p: alongPts(lanePathPts(a1, laneAnchor(u2.mb.at)), f), used: [u1, u2], f, diff };
 }
 // ビーコンの真横（約1m以内）にいるかの判定。距離は不正確でも、1m以内ならはっきり強くなる（実測：1m −56、2m以上 −60以下）
-//  なる条件：1m地点の強さ − NEAR_ENTER_DB 以上で、2番目より NEAR_LEAD_DB 以上強い状態が NEAR_COUNT 回（0.5秒ごと）続く
+//  なる条件：1m地点の強さ − NEAR_ENTER_DB 以上で、2番目より NEAR_LEAD_DB 以上強い状態が NEAR_MS 続く
 //  やめる条件：1m地点の強さ − NEAR_EXIT_DB を下回るか、2番目との差が NEAR_HOLD_DB を下回る（すぐに出入りしないよう、なる条件よりゆるい）
 //  1m地点の強さは「1mで補正」した値。補正していなければ実測の平均 NEAR_1M_DEFAULT を使う
 //  （距離の式の標準値 −45 は距離の当てはめ用の値で、実際の 1m 地点の強さとは違うため）
-const NEAR_1M_DEFAULT = -55, NEAR_ENTER_DB = 3, NEAR_EXIT_DB = 5, NEAR_LEAD_DB = 3, NEAR_HOLD_DB = 1, NEAR_COUNT = 2;
+const NEAR_1M_DEFAULT = -55, NEAR_ENTER_DB = 3, NEAR_EXIT_DB = 5, NEAR_LEAD_DB = 3, NEAR_HOLD_DB = 1, NEAR_MS = 500;
 const oneMeterOf = label => typeof st.data.tx[label] === 'number' ? st.data.tx[label] : NEAR_1M_DEFAULT;
 function decideNear(all) {
   const s = all.slice().sort((a, c) => strength(c) - strength(a));
@@ -493,9 +502,9 @@ function decideNear(all) {
   if (st.near === top.mb.label && over >= -NEAR_EXIT_DB && lead >= NEAR_HOLD_DB) return top;   // そのまま続ける
   st.near = null;
   if (over >= -NEAR_ENTER_DB && lead >= NEAR_LEAD_DB) {
-    st.nearCandN = st.nearCand === top.mb.label ? st.nearCandN + 1 : 1;
-    st.nearCand = top.mb.label;
-    if (st.nearCandN >= NEAR_COUNT) { st.near = top.mb.label; st.nearCand = null; return top; }
+    const now = Date.now();
+    if (st.nearCand !== top.mb.label) { st.nearCand = top.mb.label; st.nearCandAt = now; }
+    if (now - st.nearCandAt >= NEAR_MS) { st.near = top.mb.label; st.nearCand = null; return top; }
   } else st.nearCand = null;
   return null;
 }
@@ -1039,7 +1048,7 @@ function startNav(dest, opts = {}) {
   if (N) N.keepScreenOn(true);
   if (path.length < 3) { arrive(dest); return; }
   const segs = segments(path);
-  const nav = st.nav = { dest, path, segs, doors: doorsOnPath(path), idx: 0, spoken: new Set(), off: 0, paused: false, sim: !st.pos, timer: null };
+  const nav = st.nav = { dest, path, segs, doors: doorsOnPath(path), idx: 0, spoken: new Set(), offAt: null, arriveAt: null, paused: false, sim: !st.pos, timer: null };
   buildMap($('navMap'), { path, dest });
   placeMeCell(path[0], segs[0].d);
   $('pauseBtn').textContent = '一時停止';
@@ -1121,6 +1130,8 @@ function simTick() {
   if (st.nav === nav) nav.timer = setTimeout(simTick, spoke ? 2300 : 480);
 }
 // ビーコンで推定した現在地から進み具合を更新する
+const ARRIVE_MS = 1000;      // 到着の条件がこの時間続いたら到着
+const OFF_ROUTE_MS = 2500;   // ルートから外れた状態がこの時間続いたら、ルートを引き直す
 function navRealUpdate() {
   const nav = st.nav; if (!nav || nav.sim || nav.paused) return;
   updateSrcChip();
@@ -1129,12 +1140,14 @@ function navRealUpdate() {
   // 矢印は向いている方向（方角合わせをしていなければ、ルートの進む方向）
   const h = mapHeading();
   placeMeAt(pos, h != null ? h : nav.segs[segIndexAt(Math.max(1, nav.idx))].d * 90);
-  // 到着：条件を満たす状態が約1.5秒（3回）続いたら
-  nav.arriveN = atDest(nav.dest) ? (nav.arriveN || 0) + 1 : 0;
-  if (nav.arriveN >= 3) { advance(nav.path.length - 1); return; }
+  // 到着：条件を満たす状態が ARRIVE_MS 続いたら
+  const now = Date.now();
+  if (!atDest(nav.dest)) nav.arriveAt = null;
+  else if (nav.arriveAt == null) nav.arriveAt = now;
+  if (nav.arriveAt != null && now - nav.arriveAt >= ARRIVE_MS) { advance(nav.path.length - 1); return; }
   // ルート上の位置：線の上での位置合わせの結果（pathIdx）を使う
   if (st.pos.pathIdx != null && st.pos.path === nav.path) {
-    nav.off = 0;
+    nav.offAt = null;
     if (st.pos.pathIdx > nav.idx) advance(st.pos.pathIdx);
     return;
   }
@@ -1146,9 +1159,10 @@ function navRealUpdate() {
     if (d < bd - 1e-6) { bd = d; bj = j; }
   }
   if (bd <= 2.0) {
-    nav.off = 0;
+    nav.offAt = null;
     if (bj > nav.idx) advance(bj);
-  } else if (++nav.off >= 6) {   // 約3秒続けて外れていたら引き直す
+  } else if (nav.offAt == null) nav.offAt = now;
+  else if (now - nav.offAt >= OFF_ROUTE_MS) {   // OFF_ROUTE_MS 続けて外れていたら引き直す
     say('ルートから外れました。');
     startNav(nav.dest, { reroute: true });
   }
@@ -1597,8 +1611,8 @@ function renderHeightNote() {
 }
 
 // ------------------------------------------------------------ 測定の記録（ビーコンタブ）
-// 記録中は 0.5 秒ごと（ビーコンの通知ごと）に、受信中のビーコンの値と推定位置を保存する。
-// 「結果を書き出す」は測定結果一覧（Excel）と同じ列の順番の CSV、「生データ」は 0.5 秒ごとの全記録。
+// 記録中は 0.2 秒ごと（ビーコンの通知ごと）に、受信中のビーコンの値と推定位置を保存する。
+// 「結果を書き出す」は測定結果一覧（Excel）と同じ列の順番の CSV、「生データ」は 0.2 秒ごとの全記録。
 const REC_KEY = 'records';
 const REC_FIELDS = ['target', 'andPos', 'dist', 'sec', 'reps', 'iphPlace', 'andPlace', 'iphH', 'andH', 'iphDir', 'andDir', 'body', 'obst', 'note'];
 const rec = { list: [], form: { sec: '30', reps: '1', iphDir: '縦', andDir: '縦', body: '正面', obst: '無し', per: {} }, cur: null, next: null, seq: 0 };
@@ -1801,7 +1815,7 @@ function recStop(save) {
   if (N && !st.nav && !rec.next) N.keepScreenOn(false);
   renderRec();
 }
-// 0.5 秒ごとの記録
+// 0.2 秒ごとの記録（ビーコンの一覧が届くたび）
 function recTick() {
   const cur = rec.cur; if (!cur) return;
   const now = Date.now();
@@ -1969,7 +1983,7 @@ function startMock() {
       return { key: `iBeacon:E2C56DB5-DFFB-48D2-B060-D0F5A71096E0:1:${b.minor}`, type: 'iBeacon', uuid: 'E2C56DB5-DFFB-48D2-B060-D0F5A71096E0', major: 1, minor: b.minor, tx: -59, rssi, rssiLast: rssi, samples: 6, ageMs: 200, count: t };
     }).filter(b => b.rssi > -95);
     window.__native('beacons', { scanning: true, others: 17, beacons });
-  }, 500);
+  }, 200);
   window.__native('status', st.status);
 }
 
