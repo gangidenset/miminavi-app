@@ -26,7 +26,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * BLE スキャンを行い、受信中のビーコン一覧を 0.5 秒ごとにまとめて通知する。
+ * BLE スキャンを行い、受信中のビーコン一覧を 0.2 秒ごとにまとめて通知する。
  * RSSI は揺れが大きいので、直近数秒の受信値を平均して渡す。
  */
 public class BeaconScanner {
@@ -36,7 +36,7 @@ public class BeaconScanner {
         void onScanError(String message);
     }
 
-    private static final long PUBLISH_MS = 500;
+    private static final long PUBLISH_MS = 200;          // ビーコンの一覧を画面側へ渡す間隔
     private static final long SAMPLE_WINDOW_MS = 4000;   // 平均に使う期間
     private static final long FORGET_MS = 8000;          // これ以上受信がなければ一覧から外す
     private static final int MAX_SAMPLES = 20;
