@@ -919,17 +919,17 @@
         </object>
         <object label="B-03" kind="beacon" name="B-03" minor="3" id="c116">
           <mxCell parent="L_beacon" style="ellipse;whiteSpace=wrap;html=1;fillColor=#1C9488;strokeColor=#FFFFFF;strokeWidth=2;fontSize=9;fontColor=#FFFFFF;fontStyle=1;" vertex="1">
-            <mxGeometry height="30" width="30" x="496.25" y="1240" as="geometry" />
+            <mxGeometry height="30" width="30" x="365" y="1150" as="geometry" />
           </mxCell>
         </object>
         <object label="B-05" kind="beacon" name="B-05" minor="5" id="c121">
           <mxCell parent="L_beacon" style="ellipse;whiteSpace=wrap;html=1;fillColor=#1C9488;strokeColor=#FFFFFF;strokeWidth=2;fontSize=9;fontColor=#FFFFFF;fontStyle=1;" vertex="1">
-            <mxGeometry height="30" width="30" x="623.75" y="1250" as="geometry" />
+            <mxGeometry height="30" width="30" x="745" y="1166" as="geometry" />
           </mxCell>
         </object>
         <object label="B-04" kind="beacon" name="B-04" minor="4" id="c123">
           <mxCell parent="L_beacon" style="ellipse;whiteSpace=wrap;html=1;fillColor=#1C9488;strokeColor=#FFFFFF;strokeWidth=2;fontSize=9;fontColor=#FFFFFF;fontStyle=1;" vertex="1">
-            <mxGeometry height="30" width="30" x="200" y="940" as="geometry" />
+            <mxGeometry height="30" width="30" x="255" y="860" as="geometry" />
           </mxCell>
         </object>
         <mxCell id="L_note" parent="0" style="locked=0;" value="メモ" />
