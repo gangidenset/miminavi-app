@@ -422,6 +422,9 @@ def convert(src):
                 if free[iy][ix] and (in_poly(*center(ix, iy), c['poly']) or poly_edge_dist(*center(ix, iy), c['poly']) <= 0.1):
                     lane[iy][ix] = True
     lane_rows = [''.join('1' if lane[iy][ix] else '0' for ix in range(W)) for iy in range(H)]
+    # 案内ルートのマスのうち、マスの中心が赤い枠の内側にあるもの（ルートの線が枠からはみ出ないよう、ここを優先して通る）
+    core_rows = [''.join('1' if lane[iy][ix] and any(in_poly(*center(ix, iy), c['poly']) for c in corridors) else '0'
+                         for ix in range(W)) for iy in range(H)]
     if corridors:
         # つながっているか確認
         start = next(((ix, iy) for iy in range(H) for ix in range(W) if lane[iy][ix]), None)
@@ -470,8 +473,49 @@ def convert(src):
                 return best
         return None
 
+    def room_of(p):
+        # いちばん小さい部屋（部屋の中の小部屋を優先）
+        hit = [r for r in rooms if in_poly(p[0], p[1], r['poly'])]
+        if not hit:
+            return None
+        return min(hit, key=lambda r: abs(sum(a[0] * b[1] - b[0] * a[1] for a, b in zip(r['poly'], r['poly'][1:] + r['poly'][:1]))))
+
+    def nearest_lane(p):
+        # 案内ルートのマスのうち、目的地と同じ部屋にあるものを優先（壁の向こうの通路に寄せないため）。
+        # 枠の内側のマス（core）を優先する
+        room = room_of(p)
+        def pick(cond):
+            best, bd = None, 1e9
+            for iy in range(H):
+                for ix in range(W):
+                    if lane[iy][ix] and cond(ix, iy):
+                        q = center(ix, iy)
+                        dd = math.hypot(q[0] - p[0], q[1] - p[1])
+                        if dd < bd:
+                            bd, best = dd, (ix, iy)
+            return best, bd
+        core = lambda ix, iy: core_rows[iy][ix] == '1'
+        if room is not None:
+            in_room = lambda ix, iy: room_of(center(ix, iy)) is room
+            for cond in (lambda ix, iy: in_room(ix, iy) and core(ix, iy), in_room):
+                best, bd = pick(cond)
+                if best:
+                    return best, bd
+        for cond in (core, lambda ix, iy: True):
+            best, bd = pick(cond)
+            if best:
+                return best, bd
+        return None, None
+
     for d in dests:
-        c = nearest_free(d['at'])
+        c = None
+        if corridors:
+            c, dd = nearest_lane(d['at'])
+            if c is not None and dd > 1.0:
+                warnings.append(f"目的地「{d['name']}」が案内ルート（赤い枠）から {dd:.1f}m 離れています。"
+                                f"到着の判定に届くよう、赤い枠の上か近くに置いてください")
+        if c is None:
+            c = nearest_free(d['at'])
         if c is None:
             warnings.append(f"目的地「{d['name']}」の近くに通れる場所がありません")
         d['cell'] = c
@@ -498,7 +542,8 @@ def convert(src):
         'scale': scale_note,
         'bounds': [R(minx), R(miny), R(maxx), R(maxy)],
         'grid': {'cell': CELL, 'origin': [R(minx), R(miny)], 'w': W, 'h': H, 'rows': rows,
-                 'lanes': lane_rows if corridors else None},
+                 'lanes': lane_rows if corridors else None,
+                 'laneCore': core_rows if corridors else None},
         'corridors': [{'name': c['name'], 'poly': [RP(p) for p in c['poly']]} for c in corridors],
         'rooms': [{'name': r['name'], 'poly': [RP(p) for p in r['poly']]} for r in rooms],
         'walls': [{'kind': w['kind'], 'pts': [RP(p) for p in w['pts']]} for w in walls],

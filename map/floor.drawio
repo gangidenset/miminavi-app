@@ -848,22 +848,22 @@
         <mxCell id="L_dest" parent="0" style="locked=0;" value="目的地" />
         <object label="会議室（8）" kind="destination" name="会議室①" keywords="会議室,会議室8,大会議室,会議室1,MTGルーム,ミーティングルーム" id="c101">
           <mxCell parent="L_dest" style="ellipse;whiteSpace=wrap;html=1;fillColor=#E8603F;strokeColor=#FFFFFF;strokeWidth=2;fontSize=10;fontStyle=1;fontColor=#E8603F;labelPosition=center;verticalLabelPosition=bottom;align=center;verticalAlign=top;" vertex="1">
-            <mxGeometry height="18" width="20" x="260" y="810" as="geometry" />
+            <mxGeometry height="18" width="20" x="269.8" y="945.1" as="geometry" />
           </mxCell>
         </object>
         <object label="MTGスペース(4)" kind="destination" name="MTGスペースA" keywords="MTGスペース4,会議室4,スペース4,スペースA,ミーティングスペースA,打ち合わせA" id="c102">
           <mxCell parent="L_dest" style="ellipse;whiteSpace=wrap;html=1;fillColor=#E8603F;strokeColor=#FFFFFF;strokeWidth=2;fontSize=10;fontStyle=1;fontColor=#E8603F;labelPosition=center;verticalLabelPosition=bottom;align=center;verticalAlign=top;" vertex="1">
-            <mxGeometry height="18" width="18" x="310" y="1140" as="geometry" />
+            <mxGeometry height="18" width="18" x="510.7" y="1148.6" as="geometry" />
           </mxCell>
         </object>
         <object label="MTGスペース(2)" kind="destination" name="MTGスペースB" keywords="MTGスペース2,会議室2,スペース2,スペースB,ミーティングスペースB,打ち合わせB" id="c103">
           <mxCell parent="L_dest" style="ellipse;whiteSpace=wrap;html=1;fillColor=#E8603F;strokeColor=#FFFFFF;strokeWidth=2;fontSize=10;fontStyle=1;fontColor=#E8603F;labelPosition=center;verticalLabelPosition=bottom;align=center;verticalAlign=top;" vertex="1">
-            <mxGeometry height="20" width="17" x="820" y="1160" as="geometry" />
+            <mxGeometry height="20" width="17" x="631.1" y="1147.6" as="geometry" />
           </mxCell>
         </object>
         <object label="受付" kind="destination" name="受付" keywords="受付,エントランス,入口,来客" id="c104">
           <mxCell parent="L_dest" style="ellipse;whiteSpace=wrap;html=1;fillColor=#E8603F;strokeColor=#FFFFFF;strokeWidth=2;fontSize=10;fontStyle=1;fontColor=#E8603F;labelPosition=center;verticalLabelPosition=bottom;align=center;verticalAlign=top;" vertex="1">
-            <mxGeometry height="18" width="20" x="750" y="740" as="geometry" />
+            <mxGeometry height="18" width="20" x="789.5" y="741.5" as="geometry" />
           </mxCell>
         </object>
         <object label="ロッカー" kind="destination" name="ロッカー" keywords="ロッカー,荷物" id="c105">
@@ -873,7 +873,7 @@
         </object>
         <object label="書庫" kind="destination" name="書庫" keywords="書庫,資料,キャビネット" id="c106">
           <mxCell parent="L_dest" style="ellipse;whiteSpace=wrap;html=1;fillColor=#E8603F;strokeColor=#FFFFFF;strokeWidth=2;fontSize=10;fontStyle=1;fontColor=#E8603F;labelPosition=center;verticalLabelPosition=bottom;align=center;verticalAlign=top;" vertex="1">
-            <mxGeometry height="19" width="19" x="1307" y="494" as="geometry" />
+            <mxGeometry height="19" width="19" x="1309.7" y="680" as="geometry" />
           </mxCell>
         </object>
         <object label="執務スペース" kind="destination" name="執務スペース" keywords="執務,事務所,オフィス,ワークスペース,自席,デスク" id="c107">
@@ -883,12 +883,12 @@
         </object>
         <object label="コピー機" kind="destination" name="コピー機" keywords="コピー,複合機,FAX,ファックス,プリンター,シュレッダー" id="c108">
           <mxCell parent="L_dest" style="ellipse;whiteSpace=wrap;html=1;fillColor=#E8603F;strokeColor=#FFFFFF;strokeWidth=2;fontSize=10;fontStyle=1;fontColor=#E8603F;labelPosition=center;verticalLabelPosition=bottom;align=center;verticalAlign=top;" vertex="1">
-            <mxGeometry height="19" width="20" x="940" y="1197" as="geometry" />
+            <mxGeometry height="19" width="20" x="989.4" y="1188.8" as="geometry" />
           </mxCell>
         </object>
         <object label="キッチン" kind="destination" name="キッチン" keywords="キッチン,冷蔵庫,ウォーターサーバー" id="c109">
           <mxCell parent="L_dest" style="ellipse;whiteSpace=wrap;html=1;fillColor=#E8603F;strokeColor=#FFFFFF;strokeWidth=2;fontSize=10;fontStyle=1;fontColor=#E8603F;labelPosition=center;verticalLabelPosition=bottom;align=center;verticalAlign=top;" vertex="1">
-            <mxGeometry height="20" width="18" x="1568" y="1282" as="geometry" />
+            <mxGeometry height="20" width="18" x="1570" y="1229" as="geometry" />
           </mxCell>
         </object>
         <object label="トイレ" kind="destination" name="トイレ" keywords="トイレ,お手洗い,化粧室,男子トイレ,女子トイレ" id="c110">
@@ -903,7 +903,7 @@
         </object>
         <object label="一人用会議室" kind="destination" name="一人用会議室" keywords="一人用会議室,一人用の会議室,1人用会議室,ひとり用会議室,ひとりよう,一人用,ひとり用,個室,ブース,集中ブース,テレワークブース,Web会議" id="c202">
           <mxCell parent="L_dest" style="ellipse;whiteSpace=wrap;html=1;fillColor=#E8603F;strokeColor=#FFFFFF;strokeWidth=2;fontSize=10;fontStyle=1;fontColor=#E8603F;labelPosition=center;verticalLabelPosition=bottom;align=center;verticalAlign=top;" vertex="1">
-            <mxGeometry height="18" width="20" x="585" y="640" as="geometry" />
+            <mxGeometry height="18" width="20" x="509.7" y="639.8" as="geometry" />
           </mxCell>
         </object>
         <mxCell id="L_beacon" parent="0" style="locked=0;" value="ビーコン設置位置（案）" />
