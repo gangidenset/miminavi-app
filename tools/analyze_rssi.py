@@ -9,7 +9,7 @@
 使い方:
   python3 tools/analyze_rssi.py 測定結果1.csv 測定結果2.csv ...
   python3 tools/analyze_rssi.py *.csv --out report.md      # 結果を Markdown にも保存
-  python3 tools/analyze_rssi.py *.csv --raw                # 4秒平均ではなく生の受信値の平均で当てはめる
+  python3 tools/analyze_rssi.py *.csv --raw                # アプリの平均（直近2秒。2026/11/11 より前の記録は4秒）ではなく生の受信値の平均で当てはめる
   python3 tools/analyze_rssi.py *.csv --slant              # 手入力の「実際の距離」が斜めの距離のとき
   python3 tools/analyze_rssi.py 測定データ                  # フォルダを渡すと、中（サブフォルダも）の測定結果 CSV をすべて使う
   python3 tools/analyze_rssi.py                             # 何も渡さないと、近くの「測定データ」フォルダを探して使う
@@ -215,7 +215,7 @@ def conclusion(rows):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('csv', nargs='*', help='測定結果 CSV またはフォルダ（省略すると「測定データ」フォルダを探す）')
-    ap.add_argument('--raw', action='store_true', help='生RSSI平均値で当てはめる（既定は アプリが使う4秒平均の RSSI平均値）')
+    ap.add_argument('--raw', action='store_true', help='生RSSI平均値で当てはめる（既定は アプリが使う平均（直近2秒。以前の記録は4秒）の RSSI平均値）')
     ap.add_argument('--slant', action='store_true', help='手入力の「実際の距離」を斜めの距離としてそのまま使う（高さで補正しない）')
     ap.add_argument('--out', help='結果を Markdown で保存するファイル')
     ap.add_argument('--out-dir', help='このフォルダに「RSSI分析結果_日付-時刻.md」を作る（フォルダがなければ作る）')
@@ -229,7 +229,7 @@ def main():
     out = []
     p = out.append
     now = datetime.datetime.now()
-    p(f'# RSSI 分析結果（{now:%Y/%m/%d %H:%M}）\n\n対象：{len(rows)} 行（CSV {len(a.csv)} 個：{", ".join(Path(f).name for f in a.csv)}。同じ記録は1回だけ数える）　RSSI：{"生の受信値の平均" if a.raw else "4秒平均（アプリと同じ）"}\n')
+    p(f'# RSSI 分析結果（{now:%Y/%m/%d %H:%M}）\n\n対象：{len(rows)} 行（CSV {len(a.csv)} 個：{", ".join(Path(f).name for f in a.csv)}。同じ記録は1回だけ数える）　RSSI：{"生の受信値の平均" if a.raw else "アプリが使う平均（直近2秒。2026/11/11 より前の記録は4秒）"}\n')
 
     summary = conclusion(rows)
     out += summary
