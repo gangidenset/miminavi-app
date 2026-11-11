@@ -37,7 +37,7 @@ public class BeaconScanner {
     }
 
     private static final long PUBLISH_MS = 200;          // ビーコンの一覧を画面側へ渡す間隔
-    private static final long SAMPLE_WINDOW_MS = 4000;   // 平均に使う期間
+    private static final long SAMPLE_WINDOW_MS = 2000;   // 平均に使う期間（短いほど位置の追従が速く、値の揺れは大きい）
     private static final long FORGET_MS = 8000;          // これ以上受信がなければ一覧から外す
     private static final int MAX_SAMPLES = 20;
 
